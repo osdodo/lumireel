@@ -382,7 +382,10 @@ impl LumiReel {
             InputState::new(window, cx).placeholder(t!("projects.name_placeholder").to_string())
         });
         // GPUI replays retained subtrees, so each view that draws text has to be told.
-        self.preview.update(cx, |_, cx| cx.notify());
+        self.preview.update(cx, |preview, cx| {
+            preview.sync_locale(cx);
+            cx.notify();
+        });
         self.agent.update(cx, |_, cx| cx.notify());
         self.capture.update(cx, |_, cx| cx.notify());
         cx.notify();

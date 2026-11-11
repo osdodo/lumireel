@@ -170,7 +170,8 @@ fn clock(t: f32) -> String {
     format!("{:02}:{:05.2}", (t / 60.0).floor() as u32, t % 60.0)
 }
 
-/// A labelled row: a fixed-width label column keeps every control aligned.
+/// A labelled row: the label column is wide enough for the longest translation and never
+/// wraps, so every control starts on the same vertical line.
 fn row(label: impl Into<SharedString>, control: impl IntoElement, cx: &App) -> Div {
     let label: SharedString = label.into();
     h_flex()
@@ -178,8 +179,9 @@ fn row(label: impl Into<SharedString>, control: impl IntoElement, cx: &App) -> D
         .items_center()
         .child(
             div()
-                .w(px(64.))
+                .w(px(96.))
                 .flex_none()
+                .whitespace_nowrap()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(label),

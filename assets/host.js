@@ -3,6 +3,28 @@
 // handles region selection, and captures frames for `reel peek` / `reel render`.
 (() => {
   const params = new URLSearchParams(location.search);
+  // UI strings are localized by the host app; the fallbacks only cover a missing injection.
+  const strings = window.__LUMIREEL_STRINGS__ || {};
+  const sendLabel = () => strings.sendToAgent || "Send to Agent";
+  const sendHint = () =>
+    strings.sendTooltip || "Pastes into the terminal on the right without submitting";
+  const clearHint = () => strings.clearRegion || "Clear selection";
+  let sendButton = null;
+  let closeButton = null;
+
+  function applyOverlayStrings() {
+    if (sendButton) {
+      sendButton.textContent = sendLabel();
+      sendButton.title = sendHint();
+    }
+    if (closeButton) closeButton.title = clearHint();
+  }
+
+  // The app calls this when the interface language changes; the page itself is not reloaded.
+  window.__lumireelSetStrings = (next) => {
+    Object.assign(strings, next || {});
+    applyOverlayStrings();
+  };
   const captureJob = params.get("reel-capture");
   const initialT = Number(params.get("t")) || 0;
   // The app numbers its seeks; every time report says which seek it follows, so the app can drop
@@ -536,10 +558,10 @@
     actions = document.createElement("div");
     actions.style.cssText =
       "position:absolute;display:none;gap:4px;padding:3px;border-radius:8px;background:rgba(20,20,24,.92);box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:default;";
-    const sendButton = button("发给 Agent", "粘贴到右侧终端，不会自动提交", () => send("region-send"));
+    sendButton = button(sendLabel(), sendHint(), () => send("region-send"));
     sendButton.style.background = "#fff";
     sendButton.style.color = "#111";
-    const closeButton = button("✕", "清除框选", () => {
+    closeButton = button("✕", clearHint(), () => {
       clearRegion();
       send("region-clear");
     });

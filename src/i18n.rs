@@ -55,6 +55,15 @@ pub fn apply(locale: &str) {
     gpui_kit::component::set_locale(locale);
 }
 
+/// Labels the injected host script draws itself (region selection), in the current language.
+pub fn host_strings() -> serde_json::Value {
+    serde_json::json!({
+        "sendToAgent": rust_i18n::t!("preview.send_to_agent"),
+        "sendTooltip": rust_i18n::t!("preview.send_tooltip"),
+        "clearRegion": rust_i18n::t!("preview.clear_region"),
+    })
+}
+
 /// The locale currently in use.
 pub fn current() -> String {
     rust_i18n::locale().to_string()

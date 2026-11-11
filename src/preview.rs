@@ -716,6 +716,17 @@ impl PreviewPanel {
         }
     }
 
+    /// Push the current interface language into the page, which draws the region overlay's
+    /// own labels. The page itself is not reloaded, so playback is untouched.
+    pub fn sync_locale(&mut self, cx: &mut Context<Self>) {
+        let strings = crate::i18n::host_strings();
+        let script =
+            format!("window.__lumireelSetStrings && window.__lumireelSetStrings({strings});");
+        self.webview.update(cx, |webview, _| {
+            let _ = webview.evaluate_script(&script);
+        });
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
         let t = self.current_t;
         self.playing = false;

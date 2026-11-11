@@ -1402,9 +1402,9 @@ fn serve_project_file(request: Request, root: &Path, path: &str, token: &str) ->
 }
 
 fn inject_host(html: &str, token: &str) -> String {
+    let strings = crate::i18n::host_strings();
     let injection = format!(
-        "<script>window.__LUMIREEL_TOKEN__={:?};</script><script src=\"/__reel/host.js\"></script>",
-        token
+        "<script>window.__LUMIREEL_TOKEN__={token:?};window.__LUMIREEL_STRINGS__={strings};</script><script src=\"/__reel/host.js\"></script>"
     );
     let lower = html.to_ascii_lowercase();
     if let Some(index) = lower.find("<head") {
@@ -1647,6 +1647,7 @@ mod tests {
         let html = "<!doctype html><html><head><script src=\"app.js\"></script></head></html>";
         let out = inject_host(html, "tok");
         assert!(out.contains("window.__LUMIREEL_TOKEN__"));
+        assert!(out.contains("window.__LUMIREEL_STRINGS__"));
         assert!(out.find("host.js").unwrap() < out.find("app.js").unwrap());
     }
 }
