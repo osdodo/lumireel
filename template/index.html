@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lumireel</title>
+<canvas id="reel"></canvas>
+<script type="module">
+  import { shots } from '/__reel/kit.js';
+
+  window.reel = {
+    width: 1920,
+    height: 1080,
+    ...shots([]),
+  };
+</script>

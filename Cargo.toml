@@ -1,0 +1,49 @@
+[package]
+name = "lumireel"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+default-run = "lumireel"
+
+[lib]
+name = "lumireel"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "lumireel"
+path = "src/main.rs"
+
+[[bin]]
+name = "reel"
+path = "src/bin/reel.rs"
+
+[dependencies]
+gpui-kit = "0.9.1"
+gpui-webview = "0.9.1"
+wry = { version = "0.53.3", package = "lb-wry" }
+alacritty_terminal = { version = "0.26", default-features = false }
+portable-pty = "0.9"
+tiny_http = "0.12"
+notify-debouncer-mini = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+dirs = "6"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+rand = "0.9"
+flume = "0.12"
+rust-i18n = "4"
+sys-locale = "0.3"
+
+[dev-dependencies]
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
