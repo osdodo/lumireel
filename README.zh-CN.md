@@ -110,6 +110,7 @@ cargo build --release
 
 ```sh
 cargo test                      # 视频格式、提示词块和 ffmpeg 混音
+node --test tests/host-audio.test.cjs # 预览音频恢复（Node.js 18+）
 cargo run --bin reel -- help    # CLI 用法
 RUST_LOG=info cargo run         # 带日志运行
 ```

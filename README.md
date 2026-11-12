@@ -116,6 +116,7 @@ The agent command chosen in the UI is remembered between launches.
 
 ```sh
 cargo test                      # video format, prompt block and ffmpeg mix
+node --test tests/host-audio.test.cjs # preview audio recovery (Node.js 18+)
 cargo run --bin reel -- help    # CLI usage
 RUST_LOG=info cargo run         # run with logging
 ```

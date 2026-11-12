@@ -188,23 +188,21 @@
   // <audio> elements started late and were re-seeked every 250 ms to catch up, which stuttered.
   let sounds = [];
   let audioCtx = null;
+  let audioClosing = Promise.resolve();
+  let audioWatch = null;
   const buffers = new Map();
   let voices = [];
   // Decoding gets its own offline context: it is never suspended, and closing the playback
   // context cannot fail a decode in flight. Buffers play in any context.
   let decodeCtx = null;
 
-  // A fresh context for every playback. WebKit suspends a hidden page (dialog open, asset
-  // player shown, app in background); a context that lived through that can stay silent for good.
-  function freshAudioContext() {
-    closeAudioContext();
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    return audioCtx;
-  }
-
   function closeAudioContext() {
-    if (audioCtx) audioCtx.close().catch(() => {});
+    const ctx = audioCtx;
     audioCtx = null;
+    audioWatch = null;
+    // close() releases the device asynchronously. Do not open its replacement until that
+    // finishes, including when several play/seek requests arrive during the same close.
+    if (ctx) audioClosing = audioClosing.then(() => ctx.close()).catch(() => {});
   }
 
   function decode(data) {
@@ -246,10 +244,14 @@
 
   // Start every sound overlapping playback that began at reel time `fromT`, real time `realStart`.
   // Same in/out/volume rules as the exported mix (src/mix.rs), so preview and file sound alike.
-  function scheduleSounds(fromT, realStart, gen) {
+  async function scheduleSounds(fromT, realStart, gen, retries = 0) {
     stopSounds();
     if (!playing || !sounds.length) return;
-    const ctx = freshAudioContext();
+    await audioClosing;
+    if (!playing || gen !== generation) return;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx = ctx;
+    audioWatch = { time: ctx.currentTime, advancedAt: realNow(), retries };
     const resumed = ctx.state === "running" ? Promise.resolve() : ctx.resume();
     for (const sound of sounds) {
       if (!sound || !sound.src) continue;
@@ -262,7 +264,7 @@
         : 1;
       Promise.all([loadBuffer(sound.src), resumed])
         .then(([buffer]) => {
-          if (!buffer || !playing || gen !== generation) return;
+          if (!buffer || !playing || gen !== generation || ctx !== audioCtx) return;
           const endAt = Math.min(duration, at + Math.min(outPoint, buffer.duration) - inPoint);
           // Where the picture is now, on its own clock; the sound joins it there.
           const playNow = fromT + (realNow() - realStart) / 1000;
@@ -283,9 +285,37 @@
         })
         // A pause closes the context mid-resume; that rejection is expected, not a problem.
         .catch((error) => {
-          if (playing && gen === generation) problem(error, "sound");
+          if (playing && gen === generation && ctx === audioCtx) problem(error, "sound");
         });
     }
+  }
+
+  function startSounds(fromT, realStart, gen, retries = 0) {
+    scheduleSounds(fromT, realStart, gen, retries).catch((error) => {
+      if (playing && gen === generation) problem(error, "sound");
+    });
+  }
+
+  function checkAudioClock(fromT, realStart, gen) {
+    if (!audioCtx || !audioWatch) return;
+    const now = realNow();
+    const time = audioCtx.currentTime;
+    if (audioCtx.state === "running" && time > audioWatch.time) {
+      audioWatch.time = time;
+      audioWatch.advancedAt = now;
+      return;
+    }
+    // WebKit can suspend/interrupt audio after hiding or idling, leave resume() pending,
+    // or report "running" with a stalled device clock. A successful resume alone is not
+    // enough. The picture's clock keeps moving, so rebuild and join it at its current time.
+    if (now - audioWatch.advancedAt < 1000) return;
+    const retries = audioWatch.retries;
+    if (retries >= 2) {
+      stopSounds();
+      problem("Audio output did not start. Check the output device and try playing again.", "sound");
+      return;
+    }
+    startSounds(fromT, realStart, gen, retries + 1);
   }
 
   // --- Preview -------------------------------------------------------------
@@ -314,6 +344,7 @@
         send("ended", { seq: seekSeq });
         break;
       }
+      checkAudioClock(playStart, realStart, gen);
       try {
         await drawFrame(target);
       } catch {
@@ -337,7 +368,7 @@
     const gen = ++generation;
     const playStart = currentT;
     const realStart = realNow();
-    scheduleSounds(playStart, realStart, gen);
+    startSounds(playStart, realStart, gen);
     await playbackLoop(gen, playStart, realStart);
   }
 
@@ -389,7 +420,7 @@
       playing = true;
       const gen = ++generation;
       const realStart = realNow();
-      scheduleSounds(currentT, realStart, gen);
+      startSounds(currentT, realStart, gen);
       playbackLoop(gen, currentT, realStart);
     }
   }
