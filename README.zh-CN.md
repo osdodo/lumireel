@@ -60,7 +60,6 @@ Windows（`.exe` 安装包）和 Linux（`.deb` / `.rpm`）的构建产物附在
 
 ## 环境要求
 
-- macOS 12 或更高版本；Windows 和 Linux 为实验性支持。
 - 至少安装一个编码智能体 CLI，例如 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - `PATH` 中有 [`ffmpeg`](https://ffmpeg.org) —— 渲染和部分媒体处理需要它
 

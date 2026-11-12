@@ -65,7 +65,6 @@ Windows (`.exe` installer) and Linux (`.deb` / `.rpm`) builds are attached to ea
 
 ## Requirements
 
-- macOS 12 or later; Windows and Linux are experimental.
 - At least one coding agent CLI installed, e.g. [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - [`ffmpeg`](https://ffmpeg.org) on `PATH` — required for rendering and some media processing
 
