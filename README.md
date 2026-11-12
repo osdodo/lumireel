@@ -54,9 +54,10 @@ in real time.
 
 ## Install
 
-On macOS, via [Homebrew](https://brew.sh):
+On macOS, via [Homebrew](https://brew.sh) (Homebrew 7 and later ask you to trust the tap first):
 
 ```bash
+brew trust osdodo/lumireel
 brew install --cask osdodo/lumireel/lumireel
 ```
 

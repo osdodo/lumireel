@@ -49,9 +49,10 @@ window.reel.paint = (t) => {
 
 ## 安装
 
-macOS 上可通过 [Homebrew](https://brew.sh) 安装：
+macOS 上可通过 [Homebrew](https://brew.sh) 安装（Homebrew 7 及以后需要先信任 tap）：
 
 ```bash
+brew trust osdodo/lumireel
 brew install --cask osdodo/lumireel/lumireel
 ```
 
