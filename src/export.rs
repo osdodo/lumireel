@@ -103,7 +103,7 @@ impl ExportForm {
         if stem.is_empty() {
             return Err(t!("export.name_required").to_string());
         }
-        if stem.contains('/') || stem.starts_with('.') {
+        if !name_allowed(stem) {
             return Err(t!("export.name_invalid").to_string());
         }
         Ok(self.dir.join(format!("{stem}.mp4")))
@@ -159,8 +159,46 @@ impl ExportForm {
     }
 }
 
-/// `~/Movies/x` rather than `/Users/me/Movies/x`.
+/// Characters that cannot appear in an exported file name on any platform we ship on. `\` and
+/// `:` are what turn a name into a path on Windows, so rejecting them also keeps `..\..\x` and
+/// drive-absolute names from escaping the chosen folder.
+const INVALID_NAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+
+fn name_allowed(stem: &str) -> bool {
+    !stem.is_empty()
+        && !stem.starts_with('.')
+        && !stem
+            .chars()
+            .any(|c| INVALID_NAME_CHARS.contains(&c) || c.is_control())
+        && !is_reserved_name(stem)
+}
+
+/// `CON.mp4` and friends are still device names on Windows, whatever the extension.
+#[cfg(windows)]
+fn is_reserved_name(stem: &str) -> bool {
+    let base = stem
+        .split('.')
+        .next()
+        .unwrap_or(stem)
+        .trim_end()
+        .to_ascii_lowercase();
+    matches!(base.as_str(), "con" | "prn" | "aux" | "nul")
+        || (base.len() == 4
+            && (base.starts_with("com") || base.starts_with("lpt"))
+            && matches!(base.as_bytes()[3], b'1'..=b'9'))
+}
+
+#[cfg(not(windows))]
+fn is_reserved_name(_stem: &str) -> bool {
+    false
+}
+
+/// `~/Movies/x` rather than `/Users/me/Movies/x`. Windows paths keep their drive letter:
+/// `~` is a shell shorthand there, not a path.
 fn tidy(path: &Path) -> String {
+    if cfg!(windows) {
+        return path.display().to_string();
+    }
     match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
         Some(rest) if rest.as_os_str().is_empty() => "~".into(),
         Some(rest) => format!("~/{}", rest.display()),
@@ -450,5 +488,42 @@ impl Render for ExportForm {
                         .child(error),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::name_allowed;
+
+    #[test]
+    fn export_names_cannot_escape_the_folder() {
+        assert!(name_allowed("video"));
+        assert!(name_allowed("my video 2"));
+        for name in [
+            "",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "..\\..\\x",
+            "C:\\Windows\\x",
+            "a:b",
+            "a*b",
+            "a?b",
+            "a\"b",
+            "a<b",
+            "a>b",
+            "a|b",
+        ] {
+            assert!(!name_allowed(name), "{name:?} should be rejected");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_device_names_are_rejected() {
+        for name in ["con", "CON", "nul.mp4", "com1", "lpt9"] {
+            assert!(!name_allowed(name), "{name:?} is a device name");
+        }
+        assert!(name_allowed("console"));
     }
 }

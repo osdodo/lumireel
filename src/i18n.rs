@@ -3,6 +3,8 @@
 //! The locale is global process state (`rust_i18n::set_locale`), so every view reads the same
 //! language the next time it renders. Views are notified by whoever calls [`apply`].
 
+use rust_i18n::t;
+
 /// Locales this build ships translations for, in the order the menu lists them.
 pub const LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
@@ -76,6 +78,57 @@ pub fn host_strings() -> serde_json::Value {
 /// The locale currently in use.
 pub fn current() -> String {
     rust_i18n::locale().to_string()
+}
+
+/// "Show in Finder" / "Show in File Explorer" / "Show in File Manager", named the way the
+/// platform names its file manager.
+pub fn reveal() -> String {
+    #[cfg(target_os = "macos")]
+    return t!("common.reveal_macos").to_string();
+    #[cfg(windows)]
+    return t!("common.reveal_windows").to_string();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return t!("common.reveal_linux").to_string();
+}
+
+/// The assets shelf's tooltip for the same action.
+pub fn reveal_folder() -> String {
+    #[cfg(target_os = "macos")]
+    return t!("assets.reveal_folder_macos").to_string();
+    #[cfg(windows)]
+    return t!("assets.reveal_folder_windows").to_string();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return t!("assets.reveal_folder_linux").to_string();
+}
+
+/// "Move … to the Trash?" with the platform's name for it.
+pub fn trash_title(name: &str) -> String {
+    #[cfg(target_os = "macos")]
+    return t!("projects.trash_title_macos", name = name).to_string();
+    #[cfg(windows)]
+    return t!("projects.trash_title_windows", name = name).to_string();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return t!("projects.trash_title_linux", name = name).to_string();
+}
+
+/// The dialog body that goes with [`trash_title`].
+pub fn trash_body() -> String {
+    #[cfg(target_os = "macos")]
+    return t!("projects.trash_body_macos").to_string();
+    #[cfg(windows)]
+    return t!("projects.trash_body_windows").to_string();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return t!("projects.trash_body_linux").to_string();
+}
+
+/// The "Move to Trash" action label.
+pub fn trash() -> String {
+    #[cfg(target_os = "macos")]
+    return t!("projects.trash_macos").to_string();
+    #[cfg(windows)]
+    return t!("projects.trash_windows").to_string();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return t!("projects.trash_linux").to_string();
 }
 
 #[cfg(test)]

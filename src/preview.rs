@@ -24,6 +24,7 @@ use serde_json::Value;
 use crate::{
     assets::{self, Asset, AssetKind},
     export::{ExportForm, ExportSettings},
+    i18n,
     library::Project,
     prompt::{Reference, ShotInfo, format_refs},
     server::{RenderDone, RenderOptions, ServerHandle},
@@ -543,8 +544,8 @@ impl PreviewPanel {
                         Button::new("export-reveal")
                             .xsmall()
                             .ghost()
-                            .label(t!("common.reveal").to_string())
-                            .on_click(move |_, _, _| crate::library::reveal_in_finder(&reveal)),
+                            .label(i18n::reveal())
+                            .on_click(move |_, _, _| crate::library::reveal_in_file_manager(&reveal)),
                     )
                     .child(
                         Button::new("export-open")
@@ -1058,9 +1059,9 @@ impl PreviewPanel {
                         .on_click(move |_, _, cx| cx.open_with_system(&open)),
                 )
                 .item(
-                    PopupMenuItem::new(t!("common.reveal").to_string())
+                    PopupMenuItem::new(i18n::reveal())
                         .icon(gpui_kit::assets::IconName::FolderOpen)
-                        .on_click(move |_, _, _| crate::library::reveal_in_finder(&reveal)),
+                        .on_click(move |_, _, _| crate::library::reveal_in_file_manager(&reveal)),
                 )
                 .separator()
                 .item(
@@ -1124,7 +1125,7 @@ impl PreviewPanel {
             .xsmall()
             .ghost()
             .icon(gpui_kit::assets::IconName::FolderOpen)
-            .tooltip(t!("assets.reveal_folder").to_string())
+            .tooltip(i18n::reveal_folder())
             .on_click(cx.listener(|this, _, _, cx| this.open_assets_folder(cx)));
         let open_empty = Button::new("assets-open-empty")
             .xsmall()

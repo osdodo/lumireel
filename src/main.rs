@@ -424,9 +424,9 @@ impl LumiReel {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        let title = t!("projects.trash_title", name = name).to_string();
-        let body = t!("projects.trash_body").to_string();
-        let trash_label = t!("projects.trash").to_string();
+        let title = i18n::trash_title(&name);
+        let body = i18n::trash_body();
+        let trash_label = i18n::trash();
         window.open_dialog(cx, move |dialog, _, cx| {
             let weak = weak.clone();
             let path = path.clone();
@@ -597,13 +597,13 @@ impl LumiReel {
                         }
                     };
                     menu.item(item(
-                        t!("common.reveal").to_string(),
+                        i18n::reveal(),
                         Some(IconName::FolderOpen),
-                        |_, project, _, _| library::reveal_in_finder(&project.path),
+                        |_, project, _, _| library::reveal_in_file_manager(&project.path),
                     ))
                     .separator()
                     .item(item(
-                        t!("projects.trash").to_string(),
+                        i18n::trash(),
                         Some(IconName::Delete),
                         |this, project, window, cx| this.confirm_trash(project.path, window, cx),
                     ))

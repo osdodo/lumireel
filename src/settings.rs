@@ -266,8 +266,8 @@ impl SettingsForm {
             let dir = dir.clone();
             Button::new("reveal-library")
                 .small()
-                .label(t!("common.reveal").to_string())
-                .on_click(move |_, _, _| library::reveal_in_finder(&dir))
+                .label(i18n::reveal())
+                .on_click(move |_, _, _| library::reveal_in_file_manager(&dir))
         });
 
         SettingPage::new(t!("settings.general").to_string())

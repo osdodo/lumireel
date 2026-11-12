@@ -101,7 +101,7 @@ Windows（`.exe` 安装包）和 Linux（`.deb` / `.rpm`）的构建产物附在
 |---|---|
 | 项目库 | macOS 上为 `~/Movies/lumireel`（其他平台为 `~/Videos/lumireel`） |
 | 项目库覆盖 | 环境变量 `LUMIREEL_LIBRARY_DIR` |
-| 应用设置 | `~/Library/Application Support/lumireel/config.json` |
+| 应用设置 | macOS 为 `~/Library/Application Support/lumireel/config.json`，Windows 为 `%APPDATA%\lumireel\config.json`，Linux 为 `~/.config/lumireel/config.json` |
 | 界面语言 | 跟随系统语言，可在设置（右上角齿轮）中修改 |
 | 语言覆盖 | `LUMIREEL_LOCALE=<代码>`，可选 `en`, `zh-CN`, `zh-TW`, `ja`, `ko`, `es`, `fr`, `de`, `pt-BR`, `ru` |
 

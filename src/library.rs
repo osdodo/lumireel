@@ -198,8 +198,8 @@ pub fn ago(time: SystemTime, now: SystemTime) -> String {
     }
 }
 
-/// Reveal an item in the file manager; opening the item itself would play a video.
-pub fn reveal_in_finder(path: &Path) {
+/// Reveal an item in the platform's file manager; opening the item itself would play a video.
+pub fn reveal_in_file_manager(path: &Path) {
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open")
         .arg("-R")

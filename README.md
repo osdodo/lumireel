@@ -106,7 +106,7 @@ the binary on your `PATH`. Verify the install with `ffmpeg -version`.
 |---|---|
 | Project library | `~/Movies/lumireel` on macOS (`~/Videos/lumireel` elsewhere) |
 | Library override | `LUMIREEL_LIBRARY_DIR` environment variable |
-| App settings | `~/Library/Application Support/lumireel/config.json` |
+| App settings | `~/Library/Application Support/lumireel/config.json` on macOS, `%APPDATA%\lumireel\config.json` on Windows, `~/.config/lumireel/config.json` on Linux |
 | Interface language | Follows the system language, changeable in Settings (gear icon, top right) |
 | Language override | `LUMIREEL_LOCALE=<code>`, one of `en`, `zh-CN`, `zh-TW`, `ja`, `ko`, `es`, `fr`, `de`, `pt-BR`, `ru` |
 
