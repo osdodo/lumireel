@@ -4,10 +4,13 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 const HELP: &str = "\
-reel — peek at and render the video in this folder
+reel — peek at, render and make media for the video in this folder
 
   reel peek [t | a-b]        contact sheet of the whole video (or one frame / a range)
   reel render [--fps 30] [-o out.mp4]
+  reel speech \"text\" [--voice alloy] [-o assets/x.mp3]
+  reel image \"prompt\" [--size 1024x1024] [-o assets/x.png]
+  reel video \"prompt\" [--seconds 4] [--size 1280x720] [-o assets/x.mp4]
 
 Run it inside a lumireel terminal.
 ";
@@ -97,6 +100,39 @@ fn run() -> Result<u8> {
                 println!("file: {file}");
             }
             Ok(report_problems(&response))
+        }
+        "speech" | "image" | "video" => {
+            let (url, token, project) = connection()?;
+            let mut body = json!({ "project": project, "kind": command });
+            let mut prompt: Option<&str> = None;
+            let mut i = 1;
+            while i < args.len() {
+                let key = match args[i].as_str() {
+                    "-o" | "--out" => "out",
+                    "--voice" => "voice",
+                    "--size" => "size",
+                    "--seconds" => "seconds",
+                    flag if flag.starts_with("--") => bail!("unknown {command} option: {flag}"),
+                    text => {
+                        if prompt.replace(text).is_some() {
+                            bail!("{command} takes one prompt: quote it");
+                        }
+                        i += 1;
+                        continue;
+                    }
+                };
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow!("{} needs a value", args[i]))?;
+                body[key] = json!(value);
+                i += 2;
+            }
+            body["prompt"] = json!(prompt.ok_or_else(|| anyhow!("{command} needs a prompt"))?);
+            let response = post(&url, &token, "/__ctl/generate", &body)?;
+            if let Some(file) = response.get("file").and_then(Value::as_str) {
+                println!("file: {file}");
+            }
+            Ok(0)
         }
         other => {
             eprintln!("reel: unknown command {other}\n");

@@ -82,7 +82,7 @@ cargo build --release
 
 ## Usage
 
-1. Launch LumiReel and click **新建项目** (New Project). The project starts from a 3-second template.
+1. Launch LumiReel and click **New Project**. The project starts from a 3-second template.
 2. In the agent terminal, describe the video you want.
 3. Watch the preview update as the agent edits. Select a range or region to give it precise feedback.
 4. Render the final video with `reel render`.
@@ -105,10 +105,10 @@ cargo build --release
 | Project library | `~/Movies/lumireel` on macOS (`~/Videos/lumireel` elsewhere) |
 | Library override | `LUMIREEL_LIBRARY_DIR` environment variable |
 | App settings | `~/Library/Application Support/lumireel/config.json` |
-| Interface language | Follows the system language, switchable in the project panel |
-| Language override | `LUMIREEL_LOCALE=en` or `LUMIREEL_LOCALE=zh-CN` |
+| Interface language | Follows the system language, changeable in Settings (gear icon, top right) |
+| Language override | `LUMIREEL_LOCALE=<code>`, one of `en`, `zh-CN`, `zh-TW`, `ja`, `ko`, `es`, `fr`, `de`, `pt-BR`, `ru` |
 
-Translations live in `locales/en.yml` and `locales/zh-CN.yml`. Missing keys fall back to English.
+Translations live in `locales/<code>.yml`. Missing keys fall back to English.
 
 The agent command chosen in the UI is remembered between launches.
 

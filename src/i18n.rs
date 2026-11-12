@@ -4,17 +4,20 @@
 //! language the next time it renders. Views are notified by whoever calls [`apply`].
 
 /// Locales this build ships translations for, in the order the menu lists them.
-pub const LANGUAGES: &[(&str, &str)] = &[("en", "English"), ("zh-CN", "简体中文")];
+pub const LANGUAGES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("zh-CN", "简体中文"),
+    ("zh-TW", "繁體中文"),
+    ("ja", "日本語"),
+    ("ko", "한국어"),
+    ("es", "Español"),
+    ("fr", "Français"),
+    ("de", "Deutsch"),
+    ("pt-BR", "Português (Brasil)"),
+    ("ru", "Русский"),
+];
 
 pub const DEFAULT: &str = "en";
-
-/// The name of a language as its own speakers write it.
-pub fn label(locale: &str) -> &'static str {
-    LANGUAGES
-        .iter()
-        .find(|(code, _)| *code == locale)
-        .map_or("English", |(_, name)| name)
-}
 
 /// The locale for this launch: an explicit setting wins, then `LUMIREEL_LOCALE`, then the
 /// system language. Anything we do not translate falls back to English.
@@ -38,14 +41,20 @@ pub fn init(configured: Option<&str>) -> String {
 
 /// Map a system or user locale onto one of [`LANGUAGES`].
 pub fn normalize(locale: &str) -> Option<&'static str> {
-    let locale = locale.trim().to_ascii_lowercase();
+    let locale = locale.trim().to_ascii_lowercase().replace('_', "-");
     if locale.starts_with("zh") {
-        Some("zh-CN")
-    } else if locale.starts_with("en") {
-        Some("en")
-    } else {
-        None
+        // Traditional script, or a region that writes it.
+        let traditional = ["hant", "-tw", "-hk", "-mo"].iter().any(|tag| locale.contains(tag));
+        return Some(if traditional { "zh-TW" } else { "zh-CN" });
     }
+    if locale.starts_with("pt") {
+        return Some("pt-BR");
+    }
+    let language = locale.split('-').next().unwrap_or_default();
+    LANGUAGES
+        .iter()
+        .map(|(code, _)| *code)
+        .find(|code| *code == language)
 }
 
 /// Switch the whole interface; callers must notify every view that renders text.
@@ -79,13 +88,40 @@ mod tests {
         assert_eq!(normalize("en-US"), Some("en"));
         assert_eq!(normalize("EN"), Some("en"));
         assert_eq!(normalize("zh-Hans-CN"), Some("zh-CN"));
-        assert_eq!(normalize("zh-TW"), Some("zh-CN"));
-        assert_eq!(normalize("fr-FR"), None);
+        assert_eq!(normalize("zh-TW"), Some("zh-TW"));
+        assert_eq!(normalize("zh-Hant-HK"), Some("zh-TW"));
+        assert_eq!(normalize("zh_Hans"), Some("zh-CN"));
+        assert_eq!(normalize("ja-JP"), Some("ja"));
+        assert_eq!(normalize("pt-PT"), Some("pt-BR"));
+        assert_eq!(normalize("de_DE"), Some("de"));
+        assert_eq!(normalize("it-IT"), None);
+    }
+
+    /// A key missing from a locale silently falls back to English, so check the files directly.
+    #[test]
+    fn every_locale_has_every_key() {
+        let keys = |code: &str| -> Vec<String> {
+            let path = format!("{}/locales/{code}.yml", env!("CARGO_MANIFEST_DIR"));
+            let text = std::fs::read_to_string(&path).expect(&path);
+            let mut keys: Vec<String> = text
+                .lines()
+                .filter_map(|line| line.split_once(':').map(|(key, _)| key.to_string()))
+                .filter(|key| !key.is_empty() && !key.starts_with(' '))
+                .collect();
+            keys.sort();
+            keys
+        };
+        let english = keys("en");
+        for (code, _) in LANGUAGES {
+            assert_eq!(keys(code), english, "{code}.yml keys differ from en.yml");
+        }
     }
 
     #[test]
     fn both_locales_translate_the_same_key() {
         assert_eq!(t!("projects.title", locale = "en").to_string(), "Projects");
         assert_eq!(t!("projects.title", locale = "zh-CN").to_string(), "项目");
+        assert_eq!(t!("projects.title", locale = "ja").to_string(), "プロジェクト");
+        assert_eq!(t!("projects.title", locale = "pt-BR").to_string(), "Projetos");
     }
 }

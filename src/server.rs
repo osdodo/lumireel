@@ -310,6 +310,12 @@ fn handle_request(
             }
             start_render(request, root, control, job_tx)
         }
+        (Method::Post, "/__ctl/generate") => {
+            if !authorized(&request, token) {
+                return respond_json(request, 401, &serde_json::json!({"error": "unauthorized"}));
+            }
+            generate(request, root)
+        }
         (Method::Get, "/__ctl/job") => {
             if !authorized(&request, token) {
                 return respond_json(request, 401, &serde_json::json!({"error": "unauthorized"}));
@@ -636,6 +642,28 @@ fn start_render(
                 &serde_json::json!({"error": format!("render timed out: {error}")}),
             )
         }
+    }
+}
+
+/// `reel speech|image|video`: call the configured service and write the file into the project.
+/// Settings are read per request, so a change in the dialog applies to the next call.
+fn generate(mut request: Request, root: &Path) -> Result<()> {
+    let mut body = String::new();
+    request.as_reader().read_to_string(&mut body)?;
+    let result = serde_json::from_str::<crate::generate::GenerateRequest>(&body)
+        .map_err(|e| anyhow!("invalid generate request: {e}"))
+        .and_then(|generate| {
+            let dir = project_dir(root, &generate.project)?;
+            let services = crate::config::Config::load().services;
+            crate::generate::generate(&services, &generate, &dir)
+        });
+    match result {
+        Ok(file) => respond_json(request, 200, &serde_json::json!({ "file": file })),
+        Err(error) => respond_json(
+            request,
+            502,
+            &serde_json::json!({ "error": format!("{error:#}") }),
+        ),
     }
 }
 

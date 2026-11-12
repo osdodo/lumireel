@@ -190,10 +190,28 @@
   let audioCtx = null;
   const buffers = new Map();
   let voices = [];
+  // Decoding gets its own offline context: it is never suspended, and closing the playback
+  // context cannot fail a decode in flight. Buffers play in any context.
+  let decodeCtx = null;
 
-  function audioContext() {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // A fresh context for every playback. WebKit suspends a hidden page (dialog open, asset
+  // player shown, app in background); a context that lived through that can stay silent for good.
+  function freshAudioContext() {
+    closeAudioContext();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     return audioCtx;
+  }
+
+  function closeAudioContext() {
+    if (audioCtx) audioCtx.close().catch(() => {});
+    audioCtx = null;
+  }
+
+  function decode(data) {
+    if (!decodeCtx) {
+      decodeCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(2, 1, 48000);
+    }
+    return decodeCtx.decodeAudioData(data);
   }
 
   function loadBuffer(src) {
@@ -205,7 +223,7 @@
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return response.arrayBuffer();
           })
-          .then((data) => audioContext().decodeAudioData(data))
+          .then(decode)
           .catch((error) => {
             problem(`could not decode sound ${src}: ${error}`, src);
             return null;
@@ -223,6 +241,7 @@
       gain.disconnect();
     }
     voices = [];
+    closeAudioContext();
   }
 
   // Start every sound overlapping playback that began at reel time `fromT`, real time `realStart`.
@@ -230,7 +249,7 @@
   function scheduleSounds(fromT, realStart, gen) {
     stopSounds();
     if (!playing || !sounds.length) return;
-    const ctx = audioContext();
+    const ctx = freshAudioContext();
     const resumed = ctx.state === "running" ? Promise.resolve() : ctx.resume();
     for (const sound of sounds) {
       if (!sound || !sound.src) continue;
@@ -262,7 +281,10 @@
           source.start(ctx.currentTime + Math.max(0, delay), inPoint + (startT - at) + skip, length);
           voices.push({ source, gain });
         })
-        .catch((error) => problem(error, "sound"));
+        // A pause closes the context mid-resume; that rejection is expected, not a problem.
+        .catch((error) => {
+          if (playing && gen === generation) problem(error, "sound");
+        });
     }
   }
 

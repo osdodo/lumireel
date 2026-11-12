@@ -1,12 +1,15 @@
-//! The export dialog's form: file name, folder, frame rate, aspect and fit, with a live summary.
+//! The export dialog's form: a live summary of the output, then file and picture options.
 
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _,
     button::{Button, ButtonGroup},
+    group_box::{GroupBox, GroupBoxVariants as _},
     h_flex,
     input::{Input, InputState},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -170,6 +173,20 @@ fn clock(t: f32) -> String {
     format!("{:02}:{:05.2}", (t / 60.0).floor() as u32, t % 60.0)
 }
 
+/// An outlined group with a small heading, like the settings dialog.
+fn section(title: String, cx: &App) -> GroupBox {
+    GroupBox::new()
+        .outline()
+        .title(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(cx.theme().muted_foreground)
+                .child(title),
+        )
+        .content_style(StyleRefinement::default().p_3().gap_3())
+}
+
 /// A labelled row: the label column is wide enough for the longest translation and never
 /// wraps, so every control starts on the same vertical line.
 fn row(label: impl Into<SharedString>, control: impl IntoElement, cx: &App) -> Div {
@@ -210,190 +227,228 @@ impl Render for ExportForm {
             .collect();
         let aspect_values: Vec<_> = aspects.iter().map(|(aspect, _)| *aspect).collect();
 
+        let muted = cx.theme().muted_foreground;
+        let codec = match (self.aspect, self.crop) {
+            (None, _) => t!("export.codec_original").to_string(),
+            (Some(_), false) => t!("export.codec_pad").to_string(),
+            (Some(_), true) => t!("export.codec_crop").to_string(),
+        };
+        let border = cx.theme().border;
+        // One column of the summary: a quiet label over its value.
+        let stat = |label: String, value: String, first: bool| {
+            v_flex()
+                .when(!first, |this| this.border_l_1().border_color(border))
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .px_3()
+                .child(div().text_xs().text_color(muted).child(label))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_medium()
+                        .font_family(mono.clone())
+                        .truncate()
+                        .child(value),
+                )
+        };
+
+        // What the export will produce, before how to get there.
+        let summary = v_flex()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(border)
+            .bg(cx.theme().muted.opacity(0.5))
+            .child(
+                h_flex()
+                    .py_3()
+                    .child(stat(
+                        t!("export.resolution").to_string(),
+                        format!("{out_w}×{out_h}"),
+                        true,
+                    ))
+                    .child(stat(
+                        t!("export.fps").to_string(),
+                        format!("{}", self.fps),
+                        false,
+                    ))
+                    .child(stat(
+                        t!("export.duration").to_string(),
+                        clock(self.duration),
+                        false,
+                    ))
+                    .child(stat(
+                        t!("export.frame_count").to_string(),
+                        frames.to_string(),
+                        false,
+                    )),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(border)
+                    .text_xs()
+                    .text_color(muted)
+                    .child(codec),
+            );
+
+        // The full path, or the warning that it is taken.
+        let destination = match (&file, exists) {
+            (Ok(_), true) => h_flex()
+                .gap_1p5()
+                .items_center()
+                .text_xs()
+                .text_color(cx.theme().warning)
+                .child(Icon::new(IconName::TriangleAlert).xsmall())
+                .child(t!("export.overwrite").to_string()),
+            (Ok(file), false) => h_flex()
+                .min_w_0()
+                .text_xs()
+                .font_family(mono.clone())
+                .child(div().truncate().child(tidy(file))),
+            (Err(_), _) => h_flex(),
+        };
+
         v_flex()
-            .gap_4()
+            .gap_5()
             .pt_1()
-            .child(row(
-                t!("export.filename").to_string(),
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div().flex_1().child(
-                            Input::new(&self.name)
-                                .small()
-                                .bordered(false)
-                                .focus_bordered(false),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .font_family(mono.clone())
-                            .child(".mp4"),
-                    ),
-                cx,
-            ))
-            .child(row(
-                t!("export.save_to").to_string(),
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
+            .child(summary)
+            .child(
+                section(t!("export.section_file").to_string(), cx)
+                    .footer(destination)
+                    .child(row(
+                        t!("export.filename").to_string(),
+                        Input::new(&self.name)
+                            .small()
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .suffix(
+                                div()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .font_family(mono.clone())
+                                    .child(".mp4"),
+                            ),
+                        cx,
+                    ))
+                    .child(row(
+                        t!("export.save_to").to_string(),
+                        // Drawn like the small input above, so both rows share one edge and height;
+                        // the whole field opens the folder picker.
                         h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .h(px(28.))
+                            .id("choose-dir")
+                            .h(px(30.))
                             .px_2()
                             .gap_2()
                             .items_center()
                             .rounded(cx.theme().radius)
-                            .bg(cx.theme().muted)
-                            .child(
-                                Icon::new(IconName::Folder)
-                                    .xsmall()
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .child(div().text_sm().truncate().child(tidy(&self.dir))),
-                    )
-                    .child(
-                        Button::new("choose-dir")
-                            .small()
-                            .outline()
-                            .label(t!("common.choose").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| this.choose_dir(cx))),
-                    ),
-                cx,
-            ))
-            .child(row(
-                t!("export.fps").to_string(),
-                ButtonGroup::new("fps")
-                    .small()
-                    .outline()
-                    .children(FPS.iter().map(|fps| {
-                        Button::new(SharedString::from(format!("fps-{fps}")))
-                            .label(format!("{fps}"))
-                            .selected(*fps == fps_now)
-                    }))
-                    .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
-                        if let Some(fps) = clicked.first().and_then(|i| FPS.get(*i)) {
-                            this.fps = *fps;
-                            cx.notify();
-                        }
-                    })),
-                cx,
-            ))
-            .child(row(
-                t!("export.aspect").to_string(),
-                ButtonGroup::new("aspect")
-                    .small()
-                    .outline()
-                    .children(aspects.iter().enumerate().map(|(i, (aspect, label))| {
-                        Button::new(("aspect", i))
-                            .label(if aspect.is_none() {
-                                t!("export.original").to_string()
-                            } else {
-                                (*label).to_string()
+                            .bg(cx.theme().input_background())
+                            .cursor_pointer()
+                            .hover(|this| this.bg(cx.theme().accent))
+                            .tooltip(|window, cx| {
+                                Tooltip::new(t!("common.choose").to_string()).build(window, cx)
                             })
-                            .selected(*aspect == aspect_now)
-                    }))
-                    .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
-                        if let Some(aspect) = clicked.first().and_then(|i| aspect_values.get(*i)) {
-                            this.aspect = *aspect;
-                            cx.notify();
-                        }
-                    })),
-                cx,
-            ))
-            .child(row(
-                t!("export.fit").to_string(),
-                ButtonGroup::new("fit")
-                    .small()
-                    .outline()
-                    .disabled(aspect_now.is_none())
-                    .child(
-                        Button::new("fit-pad")
-                            .label(t!("export.pad").to_string())
-                            .selected(!crop_now),
-                    )
-                    .child(
-                        Button::new("fit-crop")
-                            .label(t!("export.crop").to_string())
-                            .selected(crop_now),
-                    )
-                    .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
-                        if let Some(i) = clicked.first() {
-                            this.crop = *i == 1;
-                            cx.notify();
-                        }
-                    })),
-                cx,
-            ))
-            .child(
-                v_flex()
-                    .gap_1p5()
-                    .p_3()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().muted)
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_baseline()
+                            .on_click(cx.listener(|this, _, _, cx| this.choose_dir(cx)))
+                            .child(Icon::new(IconName::Folder).xsmall().text_color(muted))
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t!("export.output").to_string()),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .truncate()
+                                    .child(tidy(&self.dir)),
+                            ),
+                        cx,
+                    )),
+            )
+            .child(
+                section(t!("export.section_video").to_string(), cx)
+                    .child(row(
+                        t!("export.fps").to_string(),
+                        ButtonGroup::new("fps")
+                            .small()
+                            .outline()
+                            .w_full()
+                            .children(FPS.iter().map(|fps| {
+                                Button::new(SharedString::from(format!("fps-{fps}")))
+                                    .flex_1()
+                                    .label(format!("{fps}"))
+                                    .selected(*fps == fps_now)
+                            }))
+                            .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
+                                if let Some(fps) = clicked.first().and_then(|i| FPS.get(*i)) {
+                                    this.fps = *fps;
+                                    cx.notify();
+                                }
+                            })),
+                        cx,
+                    ))
+                    .child(row(
+                        t!("export.aspect").to_string(),
+                        ButtonGroup::new("aspect")
+                            .small()
+                            .outline()
+                            .w_full()
+                            .children(aspects.iter().enumerate().map(|(i, (aspect, label))| {
+                                Button::new(("aspect", i))
+                                    .flex_1()
+                                    .label(if aspect.is_none() {
+                                        t!("export.original").to_string()
+                                    } else {
+                                        (*label).to_string()
+                                    })
+                                    .selected(*aspect == aspect_now)
+                            }))
+                            .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
+                                if let Some(aspect) =
+                                    clicked.first().and_then(|i| aspect_values.get(*i))
+                                {
+                                    this.aspect = *aspect;
+                                    cx.notify();
+                                }
+                            })),
+                        cx,
+                    ))
+                    .child(row(
+                        t!("export.fit").to_string(),
+                        ButtonGroup::new("fit")
+                            .small()
+                            .outline()
+                            .w_full()
+                            .disabled(aspect_now.is_none())
+                            .child(
+                                Button::new("fit-pad")
+                                    .flex_1()
+                                    .label(t!("export.pad").to_string())
+                                    .selected(!crop_now),
                             )
                             .child(
-                                div().text_sm().font_family(mono.clone()).child(
-                                    t!(
-                                        "export.output_summary",
-                                        width = out_w,
-                                        height = out_h,
-                                        fps = self.fps,
-                                        time = clock(self.duration),
-                                        frames = frames
-                                    )
-                                    .to_string(),
-                                ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(match (self.aspect, self.crop) {
-                                (None, _) => t!("export.codec_original").to_string(),
-                                (Some(_), false) => t!("export.codec_pad").to_string(),
-                                (Some(_), true) => t!("export.codec_crop").to_string(),
-                            }),
-                    )
-                    .when_some(file.as_ref().ok(), |this, file| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .truncate()
-                                .text_color(cx.theme().muted_foreground)
-                                .font_family(mono.clone())
-                                .child(tidy(file)),
-                        )
-                    }),
+                                Button::new("fit-crop")
+                                    .flex_1()
+                                    .label(t!("export.crop").to_string())
+                                    .selected(crop_now),
+                            )
+                            .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
+                                if let Some(i) = clicked.first() {
+                                    this.crop = *i == 1;
+                                    cx.notify();
+                                }
+                            })),
+                        cx,
+                    )),
             )
-            .when(exists, |this| {
+            .when_some(self.error.clone(), |this, error| {
                 this.child(
                     h_flex()
                         .gap_1p5()
                         .items_center()
                         .text_xs()
-                        .text_color(cx.theme().warning)
-                        .child(Icon::new(IconName::TriangleAlert).xsmall())
-                        .child(t!("export.overwrite").to_string()),
+                        .text_color(cx.theme().danger)
+                        .child(Icon::new(IconName::CircleX).xsmall())
+                        .child(error),
                 )
-            })
-            .when_some(self.error.clone(), |this, error| {
-                this.child(div().text_xs().text_color(cx.theme().danger).child(error))
             })
     }
 }

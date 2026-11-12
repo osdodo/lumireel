@@ -99,10 +99,10 @@ cargo build --release
 | 项目库 | macOS 上为 `~/Movies/lumireel`（其他平台为 `~/Videos/lumireel`） |
 | 项目库覆盖 | 环境变量 `LUMIREEL_LIBRARY_DIR` |
 | 应用设置 | `~/Library/Application Support/lumireel/config.json` |
-| 界面语言 | 跟随系统语言，可在项目面板中切换 |
-| 语言覆盖 | `LUMIREEL_LOCALE=en` 或 `LUMIREEL_LOCALE=zh-CN` |
+| 界面语言 | 跟随系统语言，可在设置（右上角齿轮）中修改 |
+| 语言覆盖 | `LUMIREEL_LOCALE=<代码>`，可选 `en`, `zh-CN`, `zh-TW`, `ja`, `ko`, `es`, `fr`, `de`, `pt-BR`, `ru` |
 
-翻译文件位于 `locales/en.yml` 和 `locales/zh-CN.yml`，缺失的条目会回退到英文。
+翻译文件位于 `locales/<代码>.yml`，缺失的条目会回退到英文。
 
 在界面中选择的智能体命令会在多次启动之间被记住。
 

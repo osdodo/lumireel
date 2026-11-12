@@ -5,11 +5,10 @@ use std::{
 };
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
-    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -238,21 +237,6 @@ impl Render for AgentPanel {
         let active = self.active.clone();
         let exited = active.as_deref().is_some_and(|dir| self.is_exited(dir, cx));
         let error = self.error.clone();
-        let running = active
-            .as_ref()
-            .is_some_and(|dir| self.sessions.contains_key(dir))
-            && !exited;
-        let (status_color, status_text) = if running {
-            (cx.theme().success, t!("agent.running").to_string())
-        } else if exited {
-            (cx.theme().warning, t!("agent.exited").to_string())
-        } else {
-            (
-                cx.theme().muted_foreground.opacity(0.5),
-                t!("agent.not_started").to_string(),
-            )
-        };
-
         let history_button = {
             let weak = weak.clone();
             let dir = active.clone();
@@ -385,24 +369,6 @@ impl Render for AgentPanel {
                     .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .id("agent-status")
-                            .size(px(7.))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(status_color)
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(status_text.clone()).build(window, cx)
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("AGENT"),
-                    )
                     .child(command_picker)
                     .child(div().flex_1())
                     .child(history_button)

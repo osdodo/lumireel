@@ -64,6 +64,10 @@ with history from t, or precompute it in `preload`. Never animate by yourself (n
 - `reel peek`: a contact sheet of the whole video and a check that frames depend only on t, with page errors and
   missing files. `reel peek 4.5` one frame at full size, `reel peek 3-6` a stretch. Read the images it prints.
 - `reel render`: the MP4. Only when the person asks for the file.
+- `reel speech "text"`, `reel image "prompt"`, `reel video "prompt"`: generate a voice-over, a picture or a clip with
+  the services the person set up, saved under `assets/` (`-o` picks the path; `--voice`, `--size`, `--seconds`
+  are passed on). It prints the file. If a service is not set up, say so and make the media another way. Video
+  takes minutes: generate it only when the shot needs it.
 
 ## How you work
 

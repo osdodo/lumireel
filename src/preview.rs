@@ -396,7 +396,7 @@ impl PreviewPanel {
             let preview = preview.clone();
             dialog
                 .title(t!("preview.export_dialog_title").to_string())
-                .w(px(520.))
+                .w(px(560.))
                 .child(form.clone())
                 .footer(crate::ui::dialog_footer(
                     Button::new("export-confirm")

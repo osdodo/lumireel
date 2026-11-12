@@ -12,7 +12,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
-    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, PopupMenuItem},
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
     v_flex,
@@ -29,6 +29,7 @@ use lumireel::{
     library::{self, Project},
     preview::{PreviewEvent, PreviewPanel},
     server::{self, CaptureJob, ServerHandle},
+    settings::{SettingsChanged, SettingsForm},
     ui::{dialog_footer, panel_header},
     watch,
 };
@@ -369,14 +370,38 @@ impl LumiReel {
         });
     }
 
-    /// Switch the interface language and make every panel draw the new one.
+    /// Language, library and the generation services; every edit is applied and saved at once.
+    fn open_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview
+            .update(cx, |preview, cx| preview.hide_while_dialog_open(window, cx));
+        let form = cx.new(|cx| SettingsForm::new(window, cx, &self.config));
+        cx.subscribe_in(&form, window, |this, form, _: &SettingsChanged, window, cx| {
+            let services = form.read(cx).services(cx);
+            let locale = form.read(cx).locale();
+            this.config.services = services;
+            this.set_locale(&locale, window, cx);
+            match this.config.save() {
+                Ok(()) => this.error = None,
+                Err(error) => this.error = Some(format!("{error:#}")),
+            }
+            cx.notify();
+        })
+        .detach();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(t!("settings.title").to_string())
+                .w(px(780.))
+                .child(form.clone())
+        });
+    }
+
+    /// Switch the interface language and make every panel draw the new one. The caller saves.
     fn set_locale(&mut self, locale: &str, window: &mut Window, cx: &mut Context<Self>) {
         if i18n::current() == locale {
             return;
         }
         i18n::apply(locale);
         self.config.locale = Some(locale.to_string());
-        let _ = self.config.save();
         // The placeholder is built once with the input, so rebuild it for the new language.
         self.new_project_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("projects.name_placeholder").to_string())
@@ -693,35 +718,13 @@ impl Render for LumiReel {
                 window.refresh();
             });
         }
-        // The language picker sits in the title bar, aligned with the window controls.
-        let locale_picker = {
-            let weak = cx.entity().downgrade();
-            let current = i18n::current();
-            Button::new("locale")
-                .ghost()
-                .xsmall()
-                .label(i18n::label(&current))
-                .dropdown_caret(true)
-                .tooltip(t!("locale.switch").to_string())
-                .dropdown_menu(move |mut menu, _, _| {
-                    let current = i18n::current();
-                    for (code, name) in i18n::LANGUAGES {
-                        let weak = weak.clone();
-                        let code = *code;
-                        menu =
-                            menu.item(PopupMenuItem::new(*name).checked(current == code).on_click(
-                                move |_, window, cx| {
-                                    if let Some(this) = weak.upgrade() {
-                                        this.update(cx, |this, cx| {
-                                            this.set_locale(code, window, cx);
-                                        });
-                                    }
-                                },
-                            ));
-                    }
-                    menu
-                })
-        };
+        // Top-right of the title bar, aligned with the window controls.
+        let settings_button = Button::new("settings")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Settings)
+            .tooltip(t!("settings.title").to_string())
+            .on_click(cx.listener(|this, _, window, cx| this.open_settings_dialog(window, cx)));
 
         v_flex()
             .size_full()
@@ -750,7 +753,7 @@ impl Render for LumiReel {
                                     .child(div().truncate().child(project))
                                 }),
                         )
-                        .child(div().flex_none().child(locale_picker)),
+                        .child(div().flex_none().child(settings_button)),
                 ),
             )
             .child(
