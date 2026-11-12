@@ -70,9 +70,9 @@ pub struct TermSpec {
 }
 
 impl TermSpec {
-    /// A login shell in `cwd`: `$SHELL`, or `/bin/zsh`.
+    /// The platform's interactive shell in `cwd`.
     pub fn shell(cwd: impl Into<std::path::PathBuf>, size: TermSize) -> Self {
-        let command = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let command = crate::platform::default_shell();
         Self {
             command,
             args: Vec::new(),
@@ -158,9 +158,16 @@ impl EventProxy {
     }
 }
 
+#[cfg(unix)]
 fn std_status(status: portable_pty::ExitStatus) -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     ExitStatus::from_raw((status.exit_code() << 8) as i32)
+}
+
+#[cfg(windows)]
+fn std_status(status: portable_pty::ExitStatus) -> ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    ExitStatus::from_raw(status.exit_code())
 }
 
 /// A live terminal: PTY child + grid + event channel.
@@ -562,10 +569,22 @@ mod tests {
         false
     }
 
-    fn sh(script: &str) -> TermSession {
+    fn shell_script(script: &str) -> TermSession {
+        #[cfg(unix)]
+        let (command, args) = ("/bin/sh", vec!["-c".to_string(), script.to_string()]);
+        #[cfg(windows)]
+        let (command, args) = (
+            "powershell.exe",
+            vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-Command".into(),
+                script.into(),
+            ],
+        );
         let spec = TermSpec {
-            command: "/bin/sh".to_string(),
-            args: vec!["-c".to_string(), script.to_string()],
+            command: command.to_string(),
+            args,
             ..TermSpec::shell(std::env::temp_dir(), TermSize::new(80, 24))
         };
         TermSession::spawn(spec).expect("spawn")
@@ -580,12 +599,16 @@ mod tests {
 
     #[test]
     fn output_reaches_the_grid_and_typing_reaches_the_child() {
-        let session = sh("printf 'hello world\\r\\n'; cat");
+        let session = shell_script(if cfg!(windows) {
+            "[Console]::WriteLine('hello world'); while ($null -ne ($line = [Console]::ReadLine())) { [Console]::WriteLine($line) }"
+        } else {
+            "printf 'hello world\\r\\n'; cat"
+        });
         assert!(wait_for(|| session
             .snapshot()
             .text()
             .contains("hello world")));
-        session.write(b"typed input\n").expect("write");
+        session.write(b"typed input\r").expect("write");
         assert!(wait_for(|| session
             .snapshot()
             .text()
@@ -593,8 +616,22 @@ mod tests {
     }
 
     #[test]
+    fn portable_exit_codes_keep_their_platform_meaning() {
+        for code in [0, 3, 127, 255] {
+            let status = std_status(portable_pty::ExitStatus::with_exit_code(code));
+            assert_eq!(status.code(), Some(code as i32));
+            assert_eq!(status.success(), code == 0);
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            std_status(portable_pty::ExitStatus::with_exit_code(0xc0000005)).code(),
+            Some(0xc0000005_u32 as i32)
+        );
+    }
+
+    #[test]
     fn exit_status_is_reported_once() {
-        let session = sh("exit 3");
+        let session = shell_script("exit 3");
         let mut exits = Vec::new();
         assert!(wait_for(|| {
             for event in session.drain_events() {
@@ -610,7 +647,11 @@ mod tests {
 
     #[test]
     fn resize_reaches_the_grid() {
-        let session = sh("sleep 30");
+        let session = shell_script(if cfg!(windows) {
+            "Start-Sleep -Seconds 30"
+        } else {
+            "sleep 30"
+        });
         session.resize(40, 10).expect("resize");
         assert_eq!(session.size(), TermSize::new(40, 10));
         assert_eq!(session.snapshot().columns, 40);
@@ -618,7 +659,11 @@ mod tests {
 
     #[test]
     fn mouse_reports_follow_the_negotiated_protocol() {
-        let session = sh("printf '\\033[?1002h\\033[?1006h'; sleep 30");
+        let session = shell_script(if cfg!(windows) {
+            "[Console]::Write(([char]27) + '[?1002h' + ([char]27) + '[?1006h'); Start-Sleep -Seconds 30"
+        } else {
+            "printf '\\033[?1002h\\033[?1006h'; sleep 30"
+        });
         assert!(wait_for(|| session.wants_mouse()));
         assert_eq!(
             session.wheel_report(true, 0, 0, MouseModifiers::default()),
@@ -637,7 +682,11 @@ mod tests {
 
     #[test]
     fn wide_characters_keep_their_columns() {
-        let session = sh("printf '\\344\\270\\255\\346\\226\\207\\r\\n'");
+        let session = shell_script(if cfg!(windows) {
+            "[Console]::WriteLine(([char]0x4E2D).ToString() + [char]0x6587)"
+        } else {
+            "printf '\\344\\270\\255\\346\\226\\207\\r\\n'"
+        });
         assert!(wait_for(|| session.snapshot().text().contains("中文")));
         assert_eq!(session.snapshot().cursor, (1, 0));
     }

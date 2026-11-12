@@ -64,6 +64,8 @@ struct RegionRef {
 
 pub struct PreviewPanel {
     webview: Entity<WebView>,
+    #[cfg(target_os = "macos")]
+    audio: crate::native_audio::NativeAudio,
     /// The stage's second webview: a bare player for a sound or clip picked from the shelf.
     player: Entity<WebView>,
     /// The asset the player is showing, if any.
@@ -183,6 +185,9 @@ impl PreviewPanel {
             .with_ipc_handler(move |request| {
                 let _ = ipc_tx.send(request.body().to_string());
             });
+        #[cfg(target_os = "macos")]
+        let builder =
+            builder.with_initialization_script("window.__LUMIREEL_NATIVE_AUDIO__ = true;");
         let webview =
             cx.new(|cx| WebView::build(builder, window, cx).expect("creating preview webview"));
         let player = cx.new(|cx| {
@@ -190,6 +195,27 @@ impl PreviewPanel {
             WebView::build(builder, window, cx).expect("creating media player")
         });
         player.update(cx, |player, _| player.hide());
+
+        #[cfg(target_os = "macos")]
+        let audio = {
+            let (audio, errors) = crate::native_audio::NativeAudio::new();
+            cx.spawn(async move |this, cx| {
+                while let Ok(error) = errors.recv_async().await {
+                    log::warn!("{error}");
+                    if this
+                        .update(cx, |this, cx| {
+                            this.error = Some(error);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+            audio
+        };
 
         cx.spawn(async move |this, cx| {
             while let Ok(message) = ipc_rx.recv_async().await {
@@ -205,6 +231,8 @@ impl PreviewPanel {
 
         Self {
             webview,
+            #[cfg(target_os = "macos")]
+            audio,
             player,
             media: None,
             loaded: false,
@@ -240,6 +268,8 @@ impl PreviewPanel {
     }
 
     pub fn load(&mut self, project: &Project, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        self.audio.clear();
         self.stop_media(cx);
         let _ = crate::prompt::ensure_agents_md(&project.path);
         let url = self.server.page_url(&project.name);
@@ -272,6 +302,8 @@ impl PreviewPanel {
 
     /// Nothing selected any more (its project went to the Trash): blank the stage and stop watching.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        self.audio.clear();
         self.stop_media(cx);
         self.loaded = false;
         self.project = None;
@@ -586,6 +618,16 @@ impl PreviewPanel {
                     .unwrap_or_default();
                 self.error = None;
                 self.playing = false;
+                #[cfg(target_os = "macos")]
+                if let Some(dir) = &self.project_dir {
+                    match serde_json::from_value::<Vec<crate::mix::Sound>>(value["sounds"].clone())
+                    {
+                        Ok(sounds) => self
+                            .audio
+                            .prepare(dir.clone(), sounds, self.duration as f64),
+                        Err(error) => self.error = Some(format!("invalid preview sounds: {error}")),
+                    }
+                }
                 self.sync_sliders(cx);
                 log::info!(
                     "preview ready: {:.2}s {}x{}, {} shots",
@@ -606,6 +648,15 @@ impl PreviewPanel {
                     cx.notify();
                 }
             }
+            #[cfg(target_os = "macos")]
+            "audio-play" if self.playing && self.current(&value) => {
+                if let Some(t) = value["t"].as_f64() {
+                    self.audio
+                        .play(t, value["sentAtMs"].as_f64().unwrap_or_default());
+                }
+            }
+            #[cfg(target_os = "macos")]
+            "audio-stop" if self.current(&value) => self.audio.stop(),
             "ended" if self.current(&value) => {
                 self.playing = false;
                 self.current_t = self.duration;
@@ -728,6 +779,8 @@ impl PreviewPanel {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        self.audio.clear();
         let t = self.current_t;
         self.playing = false;
         let script = format!(
@@ -1174,6 +1227,8 @@ impl PreviewPanel {
     }
 
     fn seek_to(&mut self, t: f32, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        self.audio.stop();
         let t = t.clamp(0.0, self.duration.max(0.0));
         self.current_t = t;
         self.seek_seq += 1;
@@ -1188,6 +1243,10 @@ impl PreviewPanel {
             return;
         }
         self.playing = !self.playing;
+        #[cfg(target_os = "macos")]
+        if !self.playing {
+            self.audio.stop();
+        }
         let script = if self.playing {
             "window.__fd && window.__fd.play()"
         } else {
@@ -1217,6 +1276,8 @@ impl PreviewPanel {
     }
 
     fn pause(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        self.audio.stop();
         if self.playing {
             self.playing = false;
             self.webview.update(cx, |webview, _| {

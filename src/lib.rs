@@ -10,6 +10,9 @@ pub mod history;
 pub mod i18n;
 pub mod library;
 pub mod mix;
+#[cfg(target_os = "macos")]
+pub mod native_audio;
+pub mod platform;
 pub mod preview;
 pub mod prompt;
 pub mod server;

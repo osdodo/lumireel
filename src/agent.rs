@@ -180,27 +180,22 @@ impl AgentPanel {
         self.focus_active(window, cx);
     }
 
-    /// `$SHELL -i -l -c <command>` (or a bare login shell for `$SHELL`), with lumireel's env and `reel` on PATH.
+    /// The platform shell, with lumireel's environment and `reel` on PATH.
     fn spec(&self, dir: &Path, command: &str) -> TermSpec {
         let mut spec = TermSpec::shell(dir, TermSize::new(100, 30));
         let trimmed = command.trim();
-        if trimmed.is_empty() || trimmed == "$SHELL" {
-            spec.args = vec!["-l".into()];
-        } else {
-            // -i: tools installed via nvm etc. are only on PATH after ~/.zshrc, which -l alone skips.
-            spec.args = vec!["-i".into(), "-l".into(), "-c".into(), trimmed.into()];
-        }
+        spec.args = crate::platform::shell_arguments(trimmed);
         let bin_dir = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
             .unwrap_or_default();
-        let path = std::env::var("PATH").unwrap_or_default();
+        let path = crate::platform::prepend_path(&bin_dir, std::env::var_os("PATH").as_deref());
         spec.env = vec![
             ("COLORTERM".into(), "truecolor".into()),
             ("LUMIREEL_URL".into(), self.server.base_url.clone()),
             ("LUMIREEL_TOKEN".into(), self.server.token.clone()),
             ("LUMIREEL_PROJECT".into(), dir.display().to_string()),
-            ("PATH".into(), format!("{}:{path}", bin_dir.display())),
+            ("PATH".into(), path.to_string_lossy().into_owned()),
             ("LUMIREEL_BIN".into(), bin_dir.display().to_string()),
         ];
         spec

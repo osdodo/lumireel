@@ -187,6 +187,7 @@
   // Each sound is decoded once and scheduled on the audio clock when playback starts. The old
   // <audio> elements started late and were re-seeked every 250 ms to catch up, which stuttered.
   let sounds = [];
+  const nativeAudio = window.__LUMIREEL_NATIVE_AUDIO__ === true;
   let audioCtx = null;
   let audioClosing = Promise.resolve();
   let audioWatch = null;
@@ -232,6 +233,7 @@
   }
 
   function stopSounds() {
+    if (nativeAudio) send("audio-stop", { seq: seekSeq });
     for (const { source, gain } of voices) {
       try {
         source.stop();
@@ -247,6 +249,14 @@
   async function scheduleSounds(fromT, realStart, gen, retries = 0) {
     stopSounds();
     if (!playing || !sounds.length) return;
+    if (nativeAudio) {
+      send("audio-play", {
+        t: fromT + (realNow() - realStart) / 1000,
+        sentAtMs: RealDate.now(),
+        seq: seekSeq,
+      });
+      return;
+    }
     await audioClosing;
     if (!playing || gen !== generation) return;
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -783,7 +793,7 @@
       duration = Number(reel.duration) || 0;
       sounds = Array.isArray(reel.sounds) ? reel.sounds : [];
       // Decode now, so pressing play does not wait on it. Capture never plays sound.
-      if (!captureJob) {
+      if (!captureJob && !nativeAudio) {
         for (const sound of sounds) if (sound && sound.src) loadBuffer(sound.src);
       }
     } catch (error) {

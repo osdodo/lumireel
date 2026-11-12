@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Sound {
     pub src: String,
+    #[serde(default)]
     pub at: f64,
     #[serde(rename = "in", default)]
     pub in_point: f64,

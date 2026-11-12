@@ -52,6 +52,7 @@ async function preview(options = {}) {
     URL, URLSearchParams, console, setTimeout, clearTimeout,
     location: { search: '', href: 'http://localhost/index.html' },
     performance: { now: () => now },
+    __LUMIREEL_NATIVE_AUDIO__: !!options.native,
     requestAnimationFrame: callback => { frames.push(callback); },
     cancelAnimationFrame() {}, addEventListener() {},
     HTMLCanvasElement: Canvas,
@@ -82,6 +83,49 @@ async function preview(options = {}) {
     },
   };
 }
+
+test('Web Audio replays after a long idle without errors', async () => {
+  const p = await preview();
+  assert.equal(p.contexts.length, 0);
+  await p.play();
+  p.api.pause();
+  await p.tick(60000);
+  await p.play();
+  assert.equal(p.contexts.at(-1).sources.length, 1);
+  assert.equal(p.messages.filter(m => m.type === 'error').length, 0);
+});
+
+test('native audio replays from zero after natural end and a long idle without opening Web Audio', async () => {
+  const p = await preview({ native: true });
+  await p.play();
+  await p.tick(30000);
+  assert.equal(p.api.playing, false);
+  assert.equal(p.messages.at(-2).type, 'time');
+  assert.ok(p.messages.some(m => m.type === 'audio-stop'));
+  await p.tick(90000);
+  await p.play();
+  const plays = p.messages.filter(m => m.type === 'audio-play');
+  assert.equal(plays.length, 2);
+  assert.equal(plays[1].t, 0);
+  assert.ok(plays[1].sentAtMs > 0);
+  assert.equal(p.contexts.length, 0);
+});
+
+test('native audio follows seek sequence and stops on pause', async () => {
+  const p = await preview({ native: true });
+  await p.play();
+  await p.api.seek(12, 7);
+  await flush();
+  const play = p.messages.filter(m => m.type === 'audio-play').at(-1);
+  assert.equal(play.t, 12);
+  assert.equal(play.seq, 7);
+  p.api.pause();
+  await flush();
+  const transport = p.messages.filter(m => m.type.startsWith('audio-'));
+  assert.equal(transport.at(-1).type, 'audio-stop');
+  assert.equal(transport.at(-1).seq, 7);
+  assert.equal(p.contexts.length, 0);
+});
 
 test('restarts audio at the current picture after its clock stops while running', async () => {
   const p = await preview();

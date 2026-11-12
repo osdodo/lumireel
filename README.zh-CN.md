@@ -49,30 +49,9 @@ window.reel.paint = (t) => {
 
 ## 环境要求
 
-- macOS 12 或更高版本
+- macOS 12 或更高版本；Windows 和 Linux 为实验性支持。
 - `PATH` 中有 [`ffmpeg`](https://ffmpeg.org)（例如 `brew install ffmpeg`）—— 渲染和部分媒体处理需要它
 - 至少安装一个编码智能体 CLI，例如 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- 从源码构建还需要较新的稳定版 [Rust](https://rustup.rs) 工具链（edition 2024）
-
-## 安装
-
-### 构建 macOS 应用
-
-```sh
-./scripts/bundle-macos.sh
-open dist/LumiReel.app
-```
-
-该脚本会为当前架构以 release 模式构建两个二进制文件，并连同图标组装出
-`dist/LumiReel.app`。把它拖进 `/Applications` 即可安装。应用包做了 ad-hoc 签名但没有公证：
-在另一台 Mac 上首次打开时，请右键 → **打开**。
-
-### 从源码运行
-
-```sh
-cargo build --release
-./target/release/lumireel
-```
 
 ## 使用
 
@@ -102,18 +81,7 @@ cargo build --release
 | 界面语言 | 跟随系统语言，可在设置（右上角齿轮）中修改 |
 | 语言覆盖 | `LUMIREEL_LOCALE=<代码>`，可选 `en`, `zh-CN`, `zh-TW`, `ja`, `ko`, `es`, `fr`, `de`, `pt-BR`, `ru` |
 
-翻译文件位于 `locales/<代码>.yml`，缺失的条目会回退到英文。
-
 在界面中选择的智能体命令会在多次启动之间被记住。
-
-## 开发
-
-```sh
-cargo test                      # 视频格式、提示词块和 ffmpeg 混音
-node --test tests/host-audio.test.cjs # 预览音频恢复（Node.js 18+）
-cargo run --bin reel -- help    # CLI 用法
-RUST_LOG=info cargo run         # 带日志运行
-```
 
 ## 许可证
 

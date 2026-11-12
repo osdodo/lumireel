@@ -54,31 +54,9 @@ in real time.
 
 ## Requirements
 
-- macOS 12 or later
+- macOS 12 or later; Windows and Linux support is experimental.
 - [`ffmpeg`](https://ffmpeg.org) on `PATH` (e.g. `brew install ffmpeg`) — required for rendering and some media
 - At least one coding agent CLI installed, e.g. [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- To build from source: a recent stable [Rust](https://rustup.rs) toolchain (edition 2024)
-
-## Installation
-
-### Build the macOS app
-
-```sh
-./scripts/bundle-macos.sh
-open dist/LumiReel.app
-```
-
-The script builds both binaries in release mode for the current architecture and assembles
-`dist/LumiReel.app` with its icon. Drag
-it into `/Applications` to install. The bundle is ad-hoc signed but not notarized: on another Mac,
-open it the first time with right-click → **Open**.
-
-### Run from source
-
-```sh
-cargo build --release
-./target/release/lumireel
-```
 
 ## Usage
 
@@ -108,18 +86,7 @@ cargo build --release
 | Interface language | Follows the system language, changeable in Settings (gear icon, top right) |
 | Language override | `LUMIREEL_LOCALE=<code>`, one of `en`, `zh-CN`, `zh-TW`, `ja`, `ko`, `es`, `fr`, `de`, `pt-BR`, `ru` |
 
-Translations live in `locales/<code>.yml`. Missing keys fall back to English.
-
 The agent command chosen in the UI is remembered between launches.
-
-## Development
-
-```sh
-cargo test                      # video format, prompt block and ffmpeg mix
-node --test tests/host-audio.test.cjs # preview audio recovery (Node.js 18+)
-cargo run --bin reel -- help    # CLI usage
-RUST_LOG=info cargo run         # run with logging
-```
 
 ## License
 

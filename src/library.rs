@@ -182,16 +182,9 @@ fn newer_than(dir: &Path, time: SystemTime) -> bool {
     })
 }
 
-/// Move a project to the macOS Trash, so a mistaken delete can be put back.
+/// Move a project to the system Trash / Recycle Bin, never permanently delete it.
 pub fn trash(path: &Path) -> Result<()> {
-    let status = std::process::Command::new("/usr/bin/trash")
-        .arg(path)
-        .status()
-        .context("running /usr/bin/trash")?;
-    if !status.success() {
-        bail!("could not move {} to the Trash", path.display());
-    }
-    Ok(())
+    ::trash::delete(path).with_context(|| format!("moving {} to the Trash", path.display()))
 }
 
 /// "刚刚", "5 分钟前", "3 小时前", "2 天前" — how long ago `time` was, relative to `now`.
@@ -205,12 +198,29 @@ pub fn ago(time: SystemTime, now: SystemTime) -> String {
     }
 }
 
-/// Show `path` selected in its folder, as macOS's 在访达中显示 does; plain `open` would play a video.
+/// Reveal an item in the file manager; opening the item itself would play a video.
 pub fn reveal_in_finder(path: &Path) {
-    let _ = std::process::Command::new("open")
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open")
         .arg("-R")
         .arg(path)
-        .spawn();
+        .spawn()
+        .map(|_| ());
+    #[cfg(windows)]
+    let result = std::process::Command::new("explorer.exe")
+        .arg("/select,")
+        .arg(path)
+        .spawn()
+        .map(|_| ());
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let result = open::that_detached(if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    });
+    if let Err(error) = result {
+        log::warn!("could not reveal {}: {error}", path.display());
+    }
 }
 
 #[cfg(test)]

@@ -1439,25 +1439,7 @@ fn clipboard_paste_text(item: &ClipboardItem) -> Option<String> {
 
 /// A path as a shell will read it back whole.
 pub fn shell_escape(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    if !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
-    {
-        return text.into_owned();
-    }
-    let mut escaped = String::with_capacity(text.len() + 2);
-    escaped.push('\'');
-    for c in text.chars() {
-        if c == '\'' {
-            escaped.push_str("'\\''");
-        } else {
-            escaped.push(c);
-        }
-    }
-    escaped.push('\'');
-    escaped
+    crate::platform::quote_shell_word(&path.to_string_lossy())
 }
 
 #[cfg(test)]
@@ -1507,7 +1489,13 @@ mod tests {
     #[test]
     fn paths_are_shell_escaped() {
         assert_eq!(shell_escape(Path::new("/tmp/a.png")), "/tmp/a.png");
+        #[cfg(not(windows))]
         assert_eq!(shell_escape(Path::new("/tmp/it's")), "'/tmp/it'\\''s'");
+        #[cfg(windows)]
+        assert_eq!(
+            shell_escape(Path::new("C:\\Ada's files\\a.png")),
+            "'C:\\Ada''s files\\a.png'"
+        );
     }
 
     #[test]

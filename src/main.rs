@@ -811,9 +811,17 @@ fn random_token() -> String {
 fn main() {
     // Finder starts apps with PATH=/usr/bin:/bin:..., so Homebrew's ffmpeg would be missing.
     // shortcut: fixed Homebrew dirs only; read the login shell's PATH if users install ffmpeg elsewhere.
-    let path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: first statement of main, before any other thread exists.
-    unsafe { std::env::set_var("PATH", format!("{path}:/opt/homebrew/bin:/usr/local/bin")) };
+    #[cfg(target_os = "macos")]
+    {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let paths = std::env::split_paths(&inherited).chain(
+            ["/opt/homebrew/bin", "/usr/local/bin"].map(std::path::PathBuf::from),
+        );
+        if let Ok(path) = std::env::join_paths(paths) {
+            // SAFETY: startup, before any other thread exists.
+            unsafe { std::env::set_var("PATH", path) };
+        }
+    }
     env_logger::init();
     let config = Config::load();
     lumireel::i18n::init(config.locale.as_deref());
@@ -828,7 +836,12 @@ fn main() {
     let port = server.port;
     log::info!("lumireel server on 127.0.0.1:{port}");
 
-    let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    // Wry embeds GTK's X11 surface; a native Wayland GPUI window cannot host it.
+    #[cfg(target_os = "linux")]
+    let app = gpui_kit::platform::linux(WindowingModes::X11);
+    #[cfg(not(target_os = "linux"))]
+    let app = gpui_kit::application();
+    let app = app.with_assets(gpui_kit::assets::AllAssets);
     app.on_reopen(reopen_windows);
     app.run(move |cx| {
         gpui_kit::init(cx);

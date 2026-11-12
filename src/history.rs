@@ -165,15 +165,7 @@ pub fn resume_command(base: &str, session: &Session) -> String {
 
 /// One shell word, quoted only when it needs to be.
 fn quote(text: &str) -> String {
-    if !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./:@%+=,".contains(c))
-    {
-        text.to_string()
-    } else {
-        format!("'{}'", text.replace('\'', "'\\''"))
-    }
+    crate::platform::quote_shell_word(text)
 }
 
 fn claude(roots: &Roots, project: &Path) -> Vec<Session> {
