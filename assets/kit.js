@@ -48,11 +48,14 @@ export function image(src) {
   });
 }
 
+// `reel peek` and `reel render` load the page with this parameter.
+const capturing = new URLSearchParams(location.search).has("reel-capture");
+
 export async function video(src) {
   const el = document.createElement("video");
   el.muted = true;
   el.playsInline = true;
-  el.preload = "auto";
+  el.preload = capturing ? "metadata" : "auto";
   el.src = src;
   await new Promise((resolve, reject) => {
     if (el.readyState >= 1) return resolve();
@@ -61,32 +64,97 @@ export async function video(src) {
       reject(new Error(`could not load video ${src}: ${el.error && el.error.message}`));
     setTimeout(() => reject(new Error(`timed out loading video ${src}`)), 15000);
   });
+  // Peek and render take exact frames decoded by ffmpeg on the server: the element has no
+  // "frame at t" call, and its seek events stall or come a frame late.
+  let frame = null;
+  async function exact(time) {
+    const url = `${src}${src.includes("?") ? "&" : "?"}frame=${time}`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${window.__LUMIREEL_TOKEN__}` },
+    });
+    if (!response.ok) {
+      throw new Error(`could not decode ${src} at ${time}s: ${await response.text()}`);
+    }
+    const w = Number(response.headers.get("X-Width"));
+    const h = Number(response.headers.get("X-Height"));
+    const pixels = new Uint8ClampedArray(await response.arrayBuffer());
+    if (!frame) frame = document.createElement("canvas");
+    if (frame.width !== w || frame.height !== h) {
+      frame.width = w;
+      frame.height = h;
+    }
+    frame.getContext("2d").putImageData(new ImageData(pixels, w, h), 0, 0);
+    // Code written for the element reads its size from these.
+    frame.videoWidth = w;
+    frame.videoHeight = h;
+    return frame;
+  }
+
+  // Preview playback lets the element play and draws whatever frame it shows: a seek per frame
+  // cannot keep up. A paused preview seeks the element to the frame.
+  let last = null;
+  let idle = 0;
+  async function follow(time) {
+    // The host freezes Date at the reel time being painted, so the speed is exact, not measured.
+    const reelT = Date.now() / 1000;
+    const rate = last && reelT > last.reelT
+      ? Math.round(((time - last.time) / (reelT - last.reelT)) * 1000) / 1000
+      : 1;
+    last = { time, reelT };
+    clearTimeout(idle);
+    idle = setTimeout(() => el.pause(), 300); // the preview paused or moved on
+    if (rate < 0.05 || rate > 4) {
+      // A still frame or a jump: show the exact frame.
+      if (!el.paused) el.pause();
+      return seek(time);
+    }
+    if (el.playbackRate !== rate) el.playbackRate = rate;
+    if (!el.paused && el.readyState >= 2 && Math.abs(el.currentTime - time) < 0.25) return el;
+    await seek(time);
+    el.play().catch(() => {});
+    return el;
+  }
+
+  async function seek(time) {
+    if (Math.abs(el.currentTime - time) < 0.0005 && el.readyState >= 2) return el;
+    el.currentTime = time;
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(el);
+      };
+      const timer = setTimeout(done, 5000);
+      if ("requestVideoFrameCallback" in el) {
+        el.requestVideoFrameCallback(done);
+        // A seek inside the frame on screen presents no new frame, so no callback would come.
+        // Video frame callbacks run before animation frames, so one frame after `seeked` is enough.
+        el.addEventListener("seeked", () => requestAnimationFrame(done), { once: true });
+      } else {
+        el.addEventListener("seeked", done, { once: true });
+      }
+      el.onerror = () => reject(new Error(`could not seek video ${src}`));
+    });
+    return el;
+  }
+
   return {
-    el,
+    // What to draw: the decoded frame while capturing, else the element.
+    get el() {
+      return frame || el;
+    },
     get duration() {
       return el.duration;
     },
-    async at(seconds) {
+    at(seconds) {
       const time = clamp(seconds, 0, Math.max(0, el.duration - 0.001));
-      if (Math.abs(el.currentTime - time) < 0.0005 && el.readyState >= 2) return el;
-      el.currentTime = time;
-      await new Promise((resolve, reject) => {
-        let settled = false;
-        const done = () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(el);
-        };
-        const timer = setTimeout(done, 5000);
-        if ("requestVideoFrameCallback" in el) {
-          el.requestVideoFrameCallback(done);
-        } else {
-          el.addEventListener("seeked", done, { once: true });
-        }
-        el.onerror = () => reject(new Error(`could not seek video ${src}`));
-      });
-      return el;
+      if (capturing) return exact(time);
+      if (window.__fd && window.__fd.playing) return follow(time);
+      last = null;
+      if (!el.paused) el.pause();
+      return seek(time);
     },
   };
 }
@@ -102,6 +170,9 @@ export function shots(modules) {
   const canvas = () => document.querySelector("canvas");
   const list = [];
   let at = 0;
+  // Shots draw here and the finished frame is copied over, so a slow video seek mid-draw
+  // keeps the last frame on screen instead of a cleared, black canvas.
+  const back = document.createElement("canvas");
 
   for (let i = 0; i < modules.length; i++) {
     const module = modules[i];
@@ -139,13 +210,25 @@ export function shots(modules) {
           "shots() draws with Canvas 2D; a WebGL reel sets its own paint(t) instead",
         );
       }
+      if (back.width !== w || back.height !== h) {
+        back.width = w;
+        back.height = h;
+      }
+      const draft = back.getContext("2d");
+      draft.save();
+      draft.setTransform(1, 0, 0, 1, 0, 0);
+      draft.globalAlpha = 1;
+      draft.globalCompositeOperation = "source-over";
+      draft.clearRect(0, 0, w, h);
+      draft.restore();
+      if (entry) await entry.shot.draw(draft, time - entry.at, w, h, time);
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = "source-over";
-      ctx.clearRect(0, 0, w, h);
+      ctx.globalCompositeOperation = "copy";
+      ctx.filter = "none";
+      ctx.drawImage(back, 0, 0);
       ctx.restore();
-      if (entry) await entry.shot.draw(ctx, time - entry.at, w, h, time);
     },
   };
   return reel;

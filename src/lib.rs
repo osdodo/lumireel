@@ -5,6 +5,7 @@ pub mod assets;
 pub mod capture;
 pub mod config;
 pub mod export;
+pub mod frames;
 pub mod generate;
 pub mod history;
 pub mod i18n;

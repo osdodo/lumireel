@@ -57,6 +57,11 @@ with history from t, or precompute it in `preload`. Never animate by yourself (n
   its moment inside it.
 - Files are local, by relative path from `index.html`, under `assets/`. Download what you use; never hotlink.
 - The preview uses the system WebView. If a video will not load, convert it to H.264 MP4 with ffmpeg first.
+- Peek and render decode video frames exactly with ffmpeg; the preview seeks the WebView's player, so long or
+  sparse-keyframe files make scrubbing slow. Cut each stretch a shot uses into its own clip with a keyframe on every
+  frame: `ffmpeg -ss A -to B -i in.mp4 -c:v libx264 -crf 18 -g 1
+  -c:a aac assets/clips/x.mp4`. Its picture and its sound then share the clip's own seconds. One `video()` per file;
+  draw its frame as often as the shot needs.
 - Make media in code or with ffmpeg; keep in `assets/` only what the video uses.
 
 ## Tools

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{Arc, Mutex, mpsc},
@@ -341,7 +341,7 @@ fn handle_request(
             finish_job(request, control, &query)
         }
         (Method::Get, _) if path.starts_with("/p/") => {
-            serve_project_file(request, root, &path, token)
+            serve_project_file(request, root, &path, token, &query)
         }
         _ => respond_json(request, 404, &serde_json::json!({"error": "not found"})),
     }
@@ -983,6 +983,8 @@ fn finish_job(
     });
     let DoneRequest { problems, duration } = done;
 
+    // The page has drawn its last frame; free the decoders it used.
+    crate::frames::clear();
     let mut control = control.lock().expect("control lock");
     let Some(mut job) = control.jobs.remove(&id) else {
         return respond_json(request, 404, &serde_json::json!({"error": "unknown job"}));
@@ -1431,7 +1433,13 @@ fn escape_html(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn serve_project_file(request: Request, root: &Path, path: &str, token: &str) -> Result<()> {
+fn serve_project_file(
+    request: Request,
+    root: &Path,
+    path: &str,
+    token: &str,
+    query: &HashMap<String, String>,
+) -> Result<()> {
     let rest = path.trim_start_matches("/p/");
     let mut parts = rest.splitn(2, '/');
     let project = percent_decode(parts.next().unwrap_or_default());
@@ -1461,14 +1469,90 @@ fn serve_project_file(request: Request, root: &Path, path: &str, token: &str) ->
         .unwrap_or("")
         .to_ascii_lowercase();
     let mime = mime_for(&ext);
+    if let Some(t) = query.get("frame") {
+        // Each request can start ffmpeg, so only the page that holds the token may ask.
+        if !authorized(&request, token) {
+            return respond_json(request, 401, &serde_json::json!({"error": "unauthorized"}));
+        }
+        let Ok(t) = t.parse::<f64>() else {
+            return respond_json(request, 400, &serde_json::json!({"error": "bad frame time"}));
+        };
+        return match crate::frames::frame_at(&canonical, t) {
+            Ok(frame) => {
+                let mut response = Response::from_data(frame.rgba.to_vec());
+                for (name, value) in [
+                    ("Content-Type", "application/octet-stream".to_string()),
+                    ("Cache-Control", "no-store".to_string()),
+                    ("X-Width", frame.width.to_string()),
+                    ("X-Height", frame.height.to_string()),
+                ] {
+                    response.add_header(Header::from_bytes(name, value).unwrap());
+                }
+                request.respond(response)?;
+                Ok(())
+            }
+            Err(error) => respond_json(
+                request,
+                500,
+                &serde_json::json!({"error": format!("{error:#}")}),
+            ),
+        };
+    }
     if ext == "html" || ext == "htm" {
         let mut html = fs::read_to_string(&canonical)?;
         html = inject_host(&html, token);
         return serve_bytes(request, html.as_bytes(), mime, Some(&canonical));
     }
 
-    let data = fs::read(&canonical)?;
-    serve_bytes(request, &data, mime, Some(&canonical))
+    serve_file(request, &canonical, mime)
+}
+
+/// Stream a project file from disk. Reading it whole per request made every video range request
+/// load the entire film into memory, which stalled preview playback on large clips.
+fn serve_file(request: Request, path: &Path, mime: &str) -> Result<()> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let range = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Range"))
+        .and_then(|h| parse_range(h.value.as_str()));
+    let (status, start, end) = match range {
+        Some((start, end)) => {
+            let (start, end) = (start as u64, (end as u64).min(len.saturating_sub(1)));
+            if start > end || start >= len {
+                let mut response = Response::empty(StatusCode(416));
+                response.add_header(
+                    Header::from_bytes("Content-Range", format!("bytes */{len}")).unwrap(),
+                );
+                request.respond(response)?;
+                return Ok(());
+            }
+            (206, start, end)
+        }
+        None if len == 0 => (200, 0, 0),
+        None => (200, 0, len - 1),
+    };
+    let count = if len == 0 { 0 } else { end - start + 1 };
+    file.seek(SeekFrom::Start(start))?;
+    let mut response = Response::new(
+        StatusCode(status),
+        Vec::new(),
+        file.take(count),
+        Some(count as usize),
+        None,
+    );
+    if status == 206 {
+        response.add_header(
+            Header::from_bytes("Content-Range", format!("bytes {start}-{end}/{len}")).unwrap(),
+        );
+    }
+    response.add_header(Header::from_bytes("Content-Type", mime).unwrap());
+    response.add_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+    response.add_header(Header::from_bytes("Accept-Ranges", "bytes").unwrap());
+    // The browser drops the connection when it seeks elsewhere; that is not an error.
+    let _ = request.respond(response);
+    Ok(())
 }
 
 fn inject_host(html: &str, token: &str) -> String {
@@ -1727,6 +1811,30 @@ mod tests {
                 && crop.contains("crop=1080:1920")
         );
         assert_eq!(video_filter(1920, 1080, None, true), None);
+    }
+
+    #[test]
+    fn project_files_are_served_by_range_from_disk() {
+        let root = std::env::temp_dir().join(format!("lumireel-range-{}", std::process::id()));
+        fs::create_dir_all(root.join("film")).unwrap();
+        fs::write(root.join("film/clip.mp4"), b"0123456789").unwrap();
+        let (handle, _jobs) = start(root.clone(), "tok".into()).unwrap();
+        let url = format!("{}/p/film/clip.mp4", handle.base_url);
+        let get = |range: Option<&str>| {
+            let mut request = ureq::get(&url);
+            if let Some(range) = range {
+                request = request.header("Range", range);
+            }
+            let mut response = request.call().unwrap();
+            let status = response.status().as_u16();
+            (status, response.body_mut().read_to_string().unwrap())
+        };
+        assert_eq!(get(None), (200, "0123456789".into()));
+        assert_eq!(get(Some("bytes=2-4")), (206, "234".into()));
+        assert_eq!(get(Some("bytes=7-")), (206, "789".into()));
+        let past = ureq::get(&url).header("Range", "bytes=20-").call();
+        assert!(matches!(past, Err(ureq::Error::StatusCode(416))));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

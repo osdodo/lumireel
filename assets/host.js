@@ -925,12 +925,16 @@
           fps,
           sounds,
         });
+        // Upload frame i while frame i + 1 draws; one upload in flight keeps them in order.
+        let upload = Promise.resolve();
         for (let i = 0; i < frames; i++) {
           await drawFrame(i / fps);
           const pixels = readPixels();
-          await postPixels(job, index, 0, i / fps, pixels);
+          await upload;
+          upload = postPixels(job, index, 0, i / fps, pixels);
           index++;
         }
+        await upload;
       } else {
         const spec = info.spec || { type: "all" };
         if (spec.type === "single") {
