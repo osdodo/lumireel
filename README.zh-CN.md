@@ -23,6 +23,10 @@
 LumiReel 是一款原生桌面应用，让你和 AI 编码智能体协作制作视频。一个视频就是一段小而确定的 HTML
 程序：你描述想要的效果，智能体把它写出来，LumiReel 负责预览和渲染。
 
+<p align="center">
+  <img src="assets/demo.gif" alt="LumiReel 演示" width="880">
+</p>
+
 ## 特性
 
 - **为智能体而生的流程** —— 智能体在项目文件夹内的真实 PTY 中工作，`reel` CLI 已加入它的

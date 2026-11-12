@@ -24,6 +24,10 @@ LumiReel is a native desktop app for producing videos together with an AI coding
 a small, deterministic HTML program; you describe what you want, the agent writes it, and LumiReel
 previews and renders it.
 
+<p align="center">
+  <img src="assets/demo.gif" alt="LumiReel demo" width="880">
+</p>
+
 ## Features
 
 - **Agent-native workflow** — the agent works in a real PTY inside the project folder, with the `reel`
