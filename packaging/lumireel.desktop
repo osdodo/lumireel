@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=LumiReel
+Comment=Make videos with a coding agent
+Exec=lumireel
+Icon=lumireel
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;

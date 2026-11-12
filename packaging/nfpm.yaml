@@ -1,0 +1,56 @@
+name: lumireel
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: video
+priority: optional
+maintainer: osdodo
+vendor: osdodo
+homepage: https://github.com/osdodo/lumireel
+license: MIT
+description: Make videos with a coding agent; every frame is code.
+contents:
+  - src: target/release/lumireel
+    dst: /usr/bin/lumireel
+    file_info:
+      mode: 0755
+  # The agent terminal calls `reel`, so it has to sit on PATH next to the app.
+  - src: target/release/reel
+    dst: /usr/bin/reel
+    file_info:
+      mode: 0755
+  - src: assets/logo.png
+    dst: /usr/share/pixmaps/lumireel.png
+  - src: packaging/lumireel.desktop
+    dst: /usr/share/applications/lumireel.desktop
+overrides:
+  deb:
+    depends:
+      - libc6
+    recommends:
+      - ffmpeg
+      - libwebkit2gtk-4.1-0
+      - libgtk-3-0
+      - libasound2t64 | libasound2
+      - libfontconfig1
+      - libfreetype6
+      - libxkbcommon0
+      - libwayland-client0
+      - libx11-6
+      - libxcb1
+      - libvulkan1
+  rpm:
+    depends:
+      - glibc
+    recommends:
+      - ffmpeg-free
+      - webkit2gtk4.1
+      - gtk3
+      - alsa-lib
+      - fontconfig
+      - freetype
+      - libxkbcommon
+      - libwayland-client
+      - libX11
+      - libxcb
+      - vulkan-loader

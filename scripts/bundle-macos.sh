@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Build dist/LumiReel.app: release binaries (lumireel + reel), Info.plist and icon.
+# Build dist/LumiReel.app: release binaries (lumireel + reel), Info.plist and icon,
+# then pack it as the drag-to-install DMG the release workflow uploads.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+arch=$(uname -m)
 app=dist/LumiReel.app
+dmg=dist/lumireel-$version-macos-$arch.dmg
 
 cargo build --release --bins
 
@@ -37,4 +40,16 @@ PLIST
 
 # Ad-hoc signature so Gatekeeper treats the bundle as one unit; not notarized.
 codesign --force --deep --sign - "$app"
+
+# The image holds the app and an Applications link, so the window is a drag-to-install
+# target without any Finder scripting.
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+cp -R "$app" "$stage/"
+ln -s /Applications "$stage/Applications"
+
+rm -f "$dmg"
+hdiutil create -quiet -volname LumiReel -srcfolder "$stage" -format UDZO -ov "$dmg"
+
 echo "Built $app ($version)"
+echo "Built $dmg"

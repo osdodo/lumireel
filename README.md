@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg">
+  <img alt="Platform: macOS, Windows, Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg">
   <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-orange.svg">
 </p>
 
@@ -52,11 +52,36 @@ window.reel.paint = (t) => {
 Because frames depend only on `t`, LumiReel can seek, sample and render without playing the video
 in real time.
 
+## Install
+
+On macOS, via [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask osdodo/lumireel/lumireel
+```
+
+Windows (`.exe` installer) and Linux (`.deb` / `.rpm`) builds are attached to each
+[release](https://github.com/osdodo/lumireel/releases).
+
 ## Requirements
 
-- macOS 12 or later; Windows and Linux support is experimental.
-- [`ffmpeg`](https://ffmpeg.org) on `PATH` (e.g. `brew install ffmpeg`) — required for rendering and some media
+- macOS 12 or later; Windows and Linux are experimental.
 - At least one coding agent CLI installed, e.g. [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [`ffmpeg`](https://ffmpeg.org) on `PATH` — required for rendering and some media processing
+
+### Installing `ffmpeg`
+
+| Platform | Command |
+|---|---|
+| macOS | `brew install ffmpeg` |
+| Windows | `winget install Gyan.FFmpeg` (or `scoop install ffmpeg` / `choco install ffmpeg`) |
+| Debian / Ubuntu | `sudo apt install ffmpeg` |
+| Fedora | `sudo dnf install ffmpeg` |
+| Arch Linux | `sudo pacman -S ffmpeg` |
+| openSUSE | `sudo zypper install ffmpeg` |
+
+Alternatively, download a static build from [ffmpeg.org/download.html](https://ffmpeg.org/download.html) and put
+the binary on your `PATH`. Verify the install with `ffmpeg -version`.
 
 ## Usage
 

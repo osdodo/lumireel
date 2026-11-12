@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg">
+  <img alt="Platform: macOS, Windows, Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg">
   <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-orange.svg">
 </p>
 
@@ -47,11 +47,36 @@ window.reel.paint = (t) => {
 
 因为帧只依赖 `t`，LumiReel 无需实时播放即可跳转、采样和渲染。
 
+## 安装
+
+macOS 上可通过 [Homebrew](https://brew.sh) 安装：
+
+```bash
+brew install --cask osdodo/lumireel/lumireel
+```
+
+Windows（`.exe` 安装包）和 Linux（`.deb` / `.rpm`）的构建产物附在每个
+[Release](https://github.com/osdodo/lumireel/releases) 中。
+
 ## 环境要求
 
 - macOS 12 或更高版本；Windows 和 Linux 为实验性支持。
-- `PATH` 中有 [`ffmpeg`](https://ffmpeg.org)（例如 `brew install ffmpeg`）—— 渲染和部分媒体处理需要它
 - 至少安装一个编码智能体 CLI，例如 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- `PATH` 中有 [`ffmpeg`](https://ffmpeg.org) —— 渲染和部分媒体处理需要它
+
+### 安装 `ffmpeg`
+
+| 平台 | 命令 |
+|---|---|
+| macOS | `brew install ffmpeg` |
+| Windows | `winget install Gyan.FFmpeg`（或 `scoop install ffmpeg` / `choco install ffmpeg`） |
+| Debian / Ubuntu | `sudo apt install ffmpeg` |
+| Fedora | `sudo dnf install ffmpeg` |
+| Arch Linux | `sudo pacman -S ffmpeg` |
+| openSUSE | `sudo zypper install ffmpeg` |
+
+也可以从 [ffmpeg.org/download.html](https://ffmpeg.org/download.html) 下载静态构建包，把可执行文件放进
+`PATH`。用 `ffmpeg -version` 验证安装是否成功。
 
 ## 使用
 
