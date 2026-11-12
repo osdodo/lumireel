@@ -783,6 +783,9 @@ fn start_ffmpeg(job: &mut Job, mix: &crate::mix::MixPlan) -> Result<()> {
     if !has_ffmpeg() {
         bail!("ffmpeg was not found on PATH");
     }
+    let encoder = video_encoder().with_context(
+        || "ffmpeg has no H.264 encoder: install a build with libx264 or libopenh264",
+    )?;
     let fps = format!("{}", job.fps.max(1.0));
     let size = format!("{}x{}", job.width, job.height);
     let mut command = Command::new("ffmpeg");
@@ -810,18 +813,14 @@ fn start_ffmpeg(job: &mut Job, mix: &crate::mix::MixPlan) -> Result<()> {
     if mix.filter.is_some() {
         command.args(["-map", "[audio]"]);
     }
-    command.args([
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-preset",
-        "medium",
-        "-crf",
-        "18",
-        "-movflags",
-        "+faststart",
-    ]);
+    command.args(["-c:v", encoder, "-pix_fmt", "yuv420p"]);
+    if encoder == "libx264" {
+        command.args(["-preset", "medium", "-crf", "18"]);
+    } else {
+        // OpenH264 has no CRF; its default quality mode picks the rate from this target.
+        command.args(["-b:v", "12M"]);
+    }
+    command.args(["-movflags", "+faststart"]);
     if mix.filter.is_some() {
         command.args(["-c:a", "aac", "-b:a", "192k"]);
     }
@@ -854,6 +853,27 @@ fn has_ffmpeg() -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+/// The H.264 encoder this ffmpeg was built with. Fedora's `ffmpeg-free` has OpenH264 and no
+/// libx264, while the usual macOS and Windows builds have libx264.
+fn video_encoder() -> Option<&'static str> {
+    let output = Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .ok()?;
+    pick_encoder(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn pick_encoder(encoders: &str) -> Option<&'static str> {
+    const PREFERRED: [&str; 2] = ["libx264", "libopenh264"];
+    PREFERRED.into_iter().find(|name| {
+        encoders.lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next().is_some_and(|flags| flags.starts_with('V'))
+                && fields.next() == Some(*name)
+        })
+    })
 }
 
 fn receive_frame(
@@ -1099,12 +1119,7 @@ fn finish_cover(job: &mut Job) -> Result<JobDone> {
 fn finish_render(job: &mut Job) -> Result<JobDone> {
     let Some((child, stdin)) = job.ffmpeg.take() else {
         dedupe_problems(&mut job.problems);
-        let details = job
-            .problems
-            .iter()
-            .map(|problem| problem.message.as_str())
-            .collect::<Vec<_>>()
-            .join("; ");
+        let details = summarize(&job.problems);
         if details.is_empty() {
             bail!("ffmpeg was never started");
         }
@@ -1112,29 +1127,56 @@ fn finish_render(job: &mut Job) -> Result<JobDone> {
     };
     drop(stdin);
     let incomplete = job.written != job.expected;
-    if incomplete {
-        job.problems.push(
-            format!(
-                "only {} of {} frames were captured",
-                job.written, job.expected
-            )
-            .into(),
-        );
-    }
     dedupe_problems(&mut job.problems);
     let output = child.wait_with_output().context("waiting for ffmpeg")?;
+    let mut reasons = Vec::new();
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        job.problems
-            .push(format!("ffmpeg failed: {}", stderr.trim()).into());
+        let stderr = stderr
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("; ");
+        if !stderr.is_empty() {
+            reasons.push(stderr);
+        }
     }
-    if !output.status.success() || incomplete {
+    if incomplete {
+        reasons.push(format!(
+            "only {} of {} frames were captured",
+            job.written, job.expected
+        ));
+    }
+    // No usable file, so do not leave a truncated one behind, and report why the export failed
+    // rather than a success with problems. Page problems that did not stop the render stay
+    // warnings on a successful export.
+    if !reasons.is_empty() {
+        let details = summarize(&job.problems);
+        if !details.is_empty() {
+            reasons.push(details);
+        }
         let _ = fs::remove_file(&job.render_out);
+        bail!("could not write the video: {}", reasons.join("; "));
+    }
+    if !job.render_out.is_file() {
+        bail!(
+            "ffmpeg finished but wrote no file at {}",
+            job.render_out.display()
+        );
     }
     Ok(JobDone::Render(RenderDone {
         file: absolute(&job.render_out),
         problems: job.problems.clone(),
     }))
+}
+
+fn summarize(problems: &[Problem]) -> String {
+    problems
+        .iter()
+        .map(|problem| problem.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn dedupe_problems(problems: &mut Vec<Problem>) {
@@ -1431,8 +1473,12 @@ fn serve_project_file(request: Request, root: &Path, path: &str, token: &str) ->
 
 fn inject_host(html: &str, token: &str) -> String {
     let strings = crate::i18n::host_strings();
+    // The page is black from its first paint. Without this, a reload shows WebKit's white
+    // default until the film's scripts boot and style the document, so every save flashes the
+    // stage white.
     let injection = format!(
-        "<script>window.__LUMIREEL_TOKEN__={token:?};window.__LUMIREEL_STRINGS__={strings};</script><script src=\"/__reel/host.js\"></script>"
+        "<style>html,body{{margin:0;height:100%;background:#000}}</style>\
+         <script>window.__LUMIREEL_TOKEN__={token:?};window.__LUMIREEL_STRINGS__={strings};</script><script src=\"/__reel/host.js\"></script>"
     );
     let lower = html.to_ascii_lowercase();
     if let Some(index) = lower.find("<head") {
@@ -1644,6 +1690,19 @@ mod tests {
     #[test]
     fn decodes_percent_escapes() {
         assert_eq!(percent_decode("a%20b%2Fc"), "a b/c");
+    }
+
+    #[test]
+    fn picks_the_first_available_h264_encoder() {
+        let fedora = " V....D libopenh264          OpenH264 H.264 / AVC / MPEG-4 AVC\n \
+                      V....D h264_vaapi           H.264/AVC (VAAPI)";
+        assert_eq!(pick_encoder(fedora), Some("libopenh264"));
+
+        let homebrew = " V....D libx264              libx264 H.264 / AVC\n \
+                        V....D libopenh264          OpenH264 H.264 / AVC";
+        assert_eq!(pick_encoder(homebrew), Some("libx264"));
+
+        assert_eq!(pick_encoder(" V....D h264_vaapi  H.264/AVC (VAAPI)"), None);
     }
 
     #[test]

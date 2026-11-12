@@ -182,6 +182,9 @@ impl PreviewPanel {
         let (ipc_tx, ipc_rx) = flume::unbounded::<String>();
         let builder = wry::WebViewBuilder::new()
             .with_url("about:blank")
+            // The stage is black, and so is the page: paint the native view black too, so
+            // nothing white shows between a navigation's first paint and the document's.
+            .with_background_color(STAGE)
             .with_ipc_handler(move |request| {
                 let _ = ipc_tx.send(request.body().to_string());
             });
@@ -191,10 +194,20 @@ impl PreviewPanel {
         let webview =
             cx.new(|cx| WebView::build(builder, window, cx).expect("creating preview webview"));
         let player = cx.new(|cx| {
-            let builder = wry::WebViewBuilder::new().with_url("about:blank");
+            let builder = wry::WebViewBuilder::new()
+                .with_url("about:blank")
+                .with_background_color(STAGE);
             WebView::build(builder, window, cx).expect("creating media player")
         });
         player.update(cx, |player, _| player.hide());
+        // GTK draws a light window background under the page while it reallocates (a resize,
+        // a reload); the dark preference keeps that from flashing white on the stage.
+        #[cfg(target_os = "linux")]
+        for view in [&webview, &player] {
+            view.update(cx, |view, _| {
+                let _ = view.set_theme(wry::Theme::Dark);
+            });
+        }
 
         #[cfg(target_os = "macos")]
         let audio = {
@@ -1492,6 +1505,10 @@ impl PreviewPanel {
 /// Widths shared by the two control rows, so their sliders start and end on the same lines.
 const CONTROL_LEADING: f32 = 200.;
 const CONTROL_TRAILING: f32 = 104.;
+
+/// The stage is black: the GPUI surround and the webviews' own background both match it, so a
+/// page that has not painted yet cannot show white.
+const STAGE: wry::RGBA = (0, 0, 0, 255);
 
 fn format_time(t: f32) -> String {
     let t = t.max(0.0);

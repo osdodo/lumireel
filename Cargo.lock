@@ -4287,7 +4287,7 @@ dependencies = [
  "image",
  "lb-wry",
  "log",
- "notify-debouncer-mini",
+ "notify",
  "objc2 0.6.5",
  "objc2-avf-audio",
  "objc2-foundation 0.3.2",
@@ -4748,18 +4748,6 @@ dependencies = [
  "objc2-core-services",
  "walkdir",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "notify-debouncer-mini"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a689eb4262184d9a1727f9087cd03883ea716682ab03ed24efec57d7716dccb8"
-dependencies = [
- "log",
- "notify",
- "notify-types",
- "tempfile",
 ]
 
 [[package]]
