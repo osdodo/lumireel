@@ -48,8 +48,18 @@ fn arguments(command: &str, shell: Shell) -> Vec<String> {
     let command = command.trim();
     let interactive = command.is_empty() || command == "$SHELL";
     match (shell, interactive) {
-        (Shell::PowerShell, true) => vec!["-NoLogo".into()],
-        (Shell::PowerShell, false) => vec!["-NoLogo".into(), "-Command".into(), command.into()],
+        (Shell::PowerShell, true) => vec![
+            "-NoLogo".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+        ],
+        (Shell::PowerShell, false) => vec![
+            "-NoLogo".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-Command".into(),
+            command.into(),
+        ],
         (Shell::Posix, true) => vec!["-l".into()],
         // Interactive login loads user PATH setup (nvm, etc.) before starting the agent.
         (Shell::Posix, false) => vec!["-i".into(), "-l".into(), "-c".into(), command.into()],
@@ -99,13 +109,16 @@ mod tests {
         let command = "codex resume 'a session'";
         assert_eq!(
             arguments(command, Shell::PowerShell),
-            ["-NoLogo", "-Command", command]
+            ["-NoLogo", "-ExecutionPolicy", "Bypass", "-Command", command]
         );
         assert_eq!(
             arguments(command, Shell::Posix),
             ["-i", "-l", "-c", command]
         );
-        assert_eq!(arguments("$SHELL", Shell::PowerShell), ["-NoLogo"]);
+        assert_eq!(
+            arguments("$SHELL", Shell::PowerShell),
+            ["-NoLogo", "-ExecutionPolicy", "Bypass"]
+        );
         assert_eq!(arguments("", Shell::Posix), ["-l"]);
     }
 

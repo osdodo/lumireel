@@ -4302,6 +4302,7 @@ dependencies = [
  "tiny_http",
  "trash",
  "ureq",
+ "winreg 0.56.0",
 ]
 
 [[package]]

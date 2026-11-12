@@ -753,7 +753,7 @@ impl Render for LumiReel {
                                     .child(div().truncate().child(project))
                                 }),
                         )
-                        .child(div().flex_none().child(settings_button)),
+                        .child(div().flex_none().occlude().child(settings_button)),
                 ),
             )
             .child(
@@ -820,6 +820,23 @@ fn main() {
         if let Ok(path) = std::env::join_paths(paths) {
             // SAFETY: startup, before any other thread exists.
             unsafe { std::env::set_var("PATH", path) };
+        }
+    }
+    // A terminal or IDE started before an install (e.g. ffmpeg via winget) hands us a stale
+    // PATH; merge the current user PATH from the registry so the new tools are found.
+    #[cfg(windows)]
+    {
+        use winreg::{RegKey, enums::HKEY_CURRENT_USER};
+        let user_path = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey("Environment")
+            .and_then(|environment| environment.get_value::<String, _>("Path"));
+        if let Ok(user_path) = user_path {
+            let inherited = std::env::var_os("PATH").unwrap_or_default();
+            let paths = std::env::split_paths(&inherited).chain(std::env::split_paths(&user_path));
+            if let Ok(path) = std::env::join_paths(paths) {
+                // SAFETY: startup, before any other thread exists.
+                unsafe { std::env::set_var("PATH", path) };
+            }
         }
     }
     env_logger::init();
