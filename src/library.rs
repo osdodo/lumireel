@@ -161,6 +161,22 @@ pub fn cover_is_stale(project: &Path) -> bool {
     newer_than(project, cover)
 }
 
+/// The preview timeline's thumbnail `index`, drawn by the capture webview.
+pub fn strip_path(project: &Path, index: usize) -> PathBuf {
+    project
+        .join(".reel")
+        .join("strip")
+        .join(format!("{index:02}.png"))
+}
+
+/// Whether the timeline thumbnails are missing or older than some source file.
+pub fn strip_is_stale(project: &Path) -> bool {
+    let Ok(first) = strip_path(project, 0).metadata().and_then(|m| m.modified()) else {
+        return true;
+    };
+    newer_than(project, first)
+}
+
 fn newer_than(dir: &Path, time: SystemTime) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
         return false;

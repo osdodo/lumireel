@@ -25,7 +25,12 @@ pub enum PeekSpec {
     Range(f64, f64),
     /// One middle frame, saved small as `.reel/cover.png` for the project list.
     Cover,
+    /// `STRIP_FRAMES` evenly spaced frames, saved small in `.reel/strip/` for the timeline.
+    Strip,
 }
+
+/// Thumbnails on the preview's timeline.
+pub const STRIP_FRAMES: usize = 12;
 
 #[derive(Clone, Debug)]
 pub struct CaptureJob {
@@ -151,6 +156,15 @@ impl ServerHandle {
             .as_str()
             .ok_or_else(|| anyhow!("cover answered without a file"))?;
         Ok(PathBuf::from(file))
+    }
+
+    /// Draw the timeline thumbnails (`.reel/strip/NN.png`). Blocks until they are written.
+    pub fn strip(&self, project: &str) -> Result<()> {
+        self.post(
+            "/__ctl/peek",
+            serde_json::json!({ "project": project, "strip": true }),
+        )?;
+        Ok(())
     }
 
     /// Whether capture job `id` is still registered (not yet finished, failed or timed out).
@@ -382,6 +396,8 @@ struct PeekRequest {
     range: Option<[f64; 2]>,
     #[serde(default)]
     cover: bool,
+    #[serde(default)]
+    strip: bool,
 }
 
 fn start_look(
@@ -397,6 +413,8 @@ fn start_look(
     let project_dir = project_dir(root, &look.project)?;
     let spec = if look.cover {
         PeekSpec::Cover
+    } else if look.strip {
+        PeekSpec::Strip
     } else if let Some(t) = look.t {
         PeekSpec::Single(t)
     } else if let Some([a, b]) = look.range {
@@ -685,7 +703,7 @@ fn job_info(
             "id": id,
             "kind": "look",
             // A cover is a thumbnail, not a check: no second, shuffled pass.
-            "passes": if matches!(spec, PeekSpec::Cover) { 1 } else { 2 },
+            "passes": if matches!(spec, PeekSpec::Cover | PeekSpec::Strip) { 1 } else { 2 },
             "spec": spec_json(spec),
         }),
         JobKind::Render => serde_json::json!({
@@ -842,6 +860,7 @@ fn spec_json(spec: &PeekSpec) -> serde_json::Value {
         PeekSpec::Single(t) => serde_json::json!({"type": "single", "t": t}),
         PeekSpec::Range(a, b) => serde_json::json!({"type": "range", "start": a, "end": b}),
         PeekSpec::Cover => serde_json::json!({"type": "cover"}),
+        PeekSpec::Strip => serde_json::json!({"type": "strip", "count": STRIP_FRAMES}),
     }
 }
 
@@ -1019,6 +1038,9 @@ fn finish_look(job: &mut Job) -> Result<JobDone> {
     if matches!(job.kind, JobKind::Peek(PeekSpec::Cover)) {
         return finish_cover(job);
     }
+    if matches!(job.kind, JobKind::Peek(PeekSpec::Strip)) {
+        return finish_strip(job);
+    }
     let peek_dir = job.project_dir.join(".reel").join("peek");
     let frames_dir = peek_dir.join("frames");
     fs::create_dir_all(&frames_dir)?;
@@ -1114,6 +1136,43 @@ fn finish_cover(job: &mut Job) -> Result<JobDone> {
     Ok(JobDone::Peek(PeekDone {
         sheet: absolute(&path),
         frames: Vec::new(),
+        problems: job.problems.clone(),
+    }))
+}
+
+/// Width of a timeline thumbnail; the bar shows it at a fraction of this.
+const STRIP_WIDTH: u32 = 160;
+
+/// Save each captured frame small as `.reel/strip/NN.png`, each written whole then renamed.
+fn finish_strip(job: &mut Job) -> Result<JobDone> {
+    let dir = job.project_dir.join(".reel").join("strip");
+    fs::create_dir_all(&dir)?;
+    let height = (STRIP_WIDTH as u64 * job.height as u64 / job.width.max(1) as u64).max(1) as u32;
+    let mut paths = Vec::new();
+    for index in 0..job.times.len() {
+        let data = job
+            .frames
+            .get(&(0, index))
+            .ok_or_else(|| anyhow!("timeline frame {index} was not captured"))?;
+        let image = RgbaImage::from_raw(job.width as u32, job.height as u32, data.clone())
+            .ok_or_else(|| anyhow!("captured frame has the wrong size"))?;
+        let small = image::imageops::resize(
+            &image,
+            STRIP_WIDTH,
+            height,
+            image::imageops::FilterType::Triangle,
+        );
+        let path = dir.join(format!("{index:02}.png"));
+        let partial = dir.join(format!("{index:02}.png.partial"));
+        small
+            .save_with_format(&partial, image::ImageFormat::Png)
+            .with_context(|| format!("writing {}", partial.display()))?;
+        fs::rename(&partial, &path)?;
+        paths.push(absolute(&path));
+    }
+    Ok(JobDone::Peek(PeekDone {
+        sheet: absolute(&dir),
+        frames: paths,
         problems: job.problems.clone(),
     }))
 }
@@ -1475,7 +1534,11 @@ fn serve_project_file(
             return respond_json(request, 401, &serde_json::json!({"error": "unauthorized"}));
         }
         let Ok(t) = t.parse::<f64>() else {
-            return respond_json(request, 400, &serde_json::json!({"error": "bad frame time"}));
+            return respond_json(
+                request,
+                400,
+                &serde_json::json!({"error": "bad frame time"}),
+            );
         };
         return match crate::frames::frame_at(&canonical, t) {
             Ok(frame) => {

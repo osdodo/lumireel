@@ -942,6 +942,10 @@
         } else if (spec.type === "cover") {
           // The middle frame: past any fade-in, before any fade-out.
           times = [duration / 2];
+        } else if (spec.type === "strip") {
+          // The middle of each cell of the timeline.
+          const count = Number(spec.count) || 12;
+          times = Array.from({ length: count }, (_, i) => (duration * (i + 0.5)) / count);
         } else {
           const start = spec.type === "range" ? Number(spec.start) || 0 : 0;
           const end =

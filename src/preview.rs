@@ -25,9 +25,9 @@ use crate::{
     assets::{self, Asset, AssetKind},
     export::{ExportForm, ExportSettings},
     i18n,
-    library::Project,
+    library::{self, Project},
     prompt::{Reference, ShotInfo, format_refs},
-    server::{RenderDone, RenderOptions, ServerHandle},
+    server::{RenderDone, RenderOptions, STRIP_FRAMES, ServerHandle},
     watch::{self, ProjectWatcher},
 };
 
@@ -99,6 +99,9 @@ pub struct PreviewPanel {
     asset_thumbs: HashMap<PathBuf, (SystemTime, Arc<Image>)>,
 
     progress: Entity<SliderState>,
+    /// Thumbnails along the progress bar; empty until they are drawn.
+    strip: Vec<Arc<Image>>,
+    _strip_task: Option<Task<()>>,
     range: Entity<SliderState>,
     range_mode: bool,
     /// The range the slider showed at its last change: tells which thumb moved, so the
@@ -269,6 +272,8 @@ impl PreviewPanel {
             selected_asset: None,
             asset_thumbs: HashMap::new(),
             progress,
+            strip: Vec::new(),
+            _strip_task: None,
             range,
             range_mode: false,
             range_seen: (0.0, 1.0),
@@ -307,6 +312,9 @@ impl PreviewPanel {
         self.asset_thumbs.clear();
         self.asset_filter = None;
         self.selected_asset = None;
+        // Possibly stale; `Ready` redraws it if so.
+        self.strip = read_strip(&project.path);
+        self._strip_task = None;
         self.webview.update(cx, |webview, _| webview.load_url(&url));
         self.sync_sliders(cx);
         self.install_watch(project.path.clone(), cx);
@@ -333,6 +341,8 @@ impl PreviewPanel {
         self.asset_thumbs.clear();
         self.asset_filter = None;
         self.selected_asset = None;
+        self.strip.clear();
+        self._strip_task = None;
         self.watch_task = None;
         self.watcher = None;
         self.webview
@@ -545,7 +555,9 @@ impl PreviewPanel {
                             .xsmall()
                             .ghost()
                             .label(i18n::reveal())
-                            .on_click(move |_, _, _| crate::library::reveal_in_file_manager(&reveal)),
+                            .on_click(move |_, _, _| {
+                                crate::library::reveal_in_file_manager(&reveal)
+                            }),
                     )
                     .child(
                         Button::new("export-open")
@@ -653,6 +665,7 @@ impl PreviewPanel {
                 cx.emit(PreviewEvent::Ready {
                     duration: self.duration as f64,
                 });
+                self.update_strip(cx);
                 cx.notify();
             }
             "time" if !self.scrubbing && self.current(&value) => {
@@ -726,6 +739,91 @@ impl PreviewPanel {
             }
             _ => {}
         }
+    }
+
+    /// Redraw the timeline thumbnails if a source file changed since they were drawn.
+    fn update_strip(&mut self, cx: &mut Context<Self>) {
+        let (Some(name), Some(dir)) = (self.project.clone(), self.project_dir.clone()) else {
+            return;
+        };
+        if !library::strip_is_stale(&dir) {
+            return;
+        }
+        let server = self.server.clone();
+        let (done_tx, done_rx) = flume::bounded(1);
+        // Blocks until the capture webview gets to it: its own thread.
+        std::thread::spawn(move || {
+            let _ = done_tx.send(server.strip(&name));
+        });
+        self._strip_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(result) = done_rx.recv_async().await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) if this.project_dir.as_ref() == Some(&dir) => {
+                    this.strip = read_strip(&dir);
+                    cx.notify();
+                }
+                Ok(()) => {}
+                Err(error) => log::warn!("timeline for {}: {error:#}", dir.display()),
+            });
+        }));
+    }
+
+    /// The progress bar: a film strip with a playhead, the part still to play dimmed.
+    fn timeline(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::base::{Slider as BaseSlider, SliderIndicator, SliderTrack};
+        let played = self.progress.read(cx).percentage().end;
+        let radius = px(4.);
+        BaseSlider::new(&self.progress)
+            .accessibility_label(t!("preview.timeline").to_string())
+            .w_full()
+            .child(
+                SliderTrack::new(&self.progress)
+                    .w_full()
+                    .h(px(40.))
+                    .py(px(3.))
+                    .cursor_pointer()
+                    .child(
+                        SliderIndicator::new(&self.progress)
+                            .relative()
+                            .size_full()
+                            .rounded(radius)
+                            .bg(cx.theme().muted)
+                            .child(h_flex().size_full().gap(px(2.)).children(
+                                self.strip.iter().map(|image| {
+                                    img(image.clone())
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .rounded(px(2.))
+                                        .object_fit(ObjectFit::Cover)
+                                }),
+                            ))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right_0()
+                                    .left(relative(played))
+                                    .rounded_r(radius)
+                                    .bg(black().opacity(0.55)),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(-3.))
+                                    .bottom(px(-3.))
+                                    .left(relative(played))
+                                    .ml(px(-1.5))
+                                    .w(px(3.))
+                                    .rounded_full()
+                                    .bg(white())
+                                    .shadow_md(),
+                            ),
+                    ),
+            )
     }
 
     /// Whether a report from the page follows our latest seek (and is not left over from before it).
@@ -1322,64 +1420,57 @@ impl PreviewPanel {
         &self,
         play_icon: IconName,
         can_play: bool,
-        range_times: Option<String>,
+        range_times: Option<(String, String)>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         v_flex()
+            .flex_none()
             .px_3()
             .py_2()
             .gap_2()
             .bg(cx.theme().sidebar)
+            // Above the strip, lined up with its ends: current time left, length right.
+            .child(
+                h_flex()
+                    .pl(px(CONTROL_LEADING + CONTROL_GAP))
+                    .pr(px(CONTROL_TRAILING + CONTROL_GAP))
+                    .justify_between()
+                    .text_xs()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .child(format_time(self.current_t))
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format_time(self.duration)),
+                    ),
+            )
             .child(
                 h_flex()
                     .items_center()
-                    .gap_3()
+                    .gap(px(CONTROL_GAP))
                     .child(
-                        h_flex()
-                            .flex_none()
-                            .w(px(CONTROL_LEADING))
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Button::new("play")
-                                    .primary()
-                                    .small()
-                                    .icon(play_icon)
-                                    .disabled(!can_play)
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
-                            )
-                            .child(
-                                h_flex()
-                                    .flex_none()
-                                    .px_2()
-                                    .py_0p5()
-                                    .gap_1()
-                                    .rounded(cx.theme().radius)
-                                    .bg(cx.theme().muted)
-                                    .text_xs()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .child(format_time(self.current_t))
-                                    .child(
-                                        div()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("/ {}", format_time(self.duration))),
-                                    ),
-                            ),
+                        div().flex_none().w(px(CONTROL_LEADING)).child(
+                            Button::new("play")
+                                .primary()
+                                .small()
+                                .w_full()
+                                .icon(play_icon)
+                                .disabled(!can_play)
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
+                        ),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Slider::new(&self.progress).w_full()),
-                    )
+                    .child(div().flex_1().min_w_0().child(self.timeline(cx)))
                     .child(
                         Button::new("range")
                             .small()
                             .ghost()
                             .w(px(CONTROL_TRAILING))
                             .icon(gpui_kit::assets::IconName::Clock)
-                            .label(t!("preview.range").to_string())
-                            .tooltip(t!("preview.range_tooltip").to_string())
+                            .tooltip(format!(
+                                "{} · {}",
+                                t!("preview.range"),
+                                t!("preview.range_tooltip")
+                            ))
                             .tooltip_placement(gpui_kit::component::Placement::Bottom)
                             .selected(self.range_mode)
                             .on_click(
@@ -1391,19 +1482,8 @@ impl PreviewPanel {
                 this.child(
                     h_flex()
                         .items_center()
-                        .gap_3()
-                        .child(div().flex_none().w(px(CONTROL_LEADING)).when_some(
-                            range_times,
-                            |this, times| {
-                                this.child(
-                                    div()
-                                        .text_xs()
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .text_color(cx.theme().foreground)
-                                        .child(times),
-                                )
-                            },
-                        ))
+                        .gap(px(CONTROL_GAP))
+                        .child(div().flex_none().w(px(CONTROL_LEADING)))
                         .child(
                             div()
                                 .flex_1()
@@ -1416,11 +1496,27 @@ impl PreviewPanel {
                                 .primary()
                                 .w(px(CONTROL_TRAILING))
                                 .icon(gpui_kit::assets::IconName::SendHorizontal)
-                                .label(t!("preview.send_to_agent").to_string())
-                                .tooltip(t!("preview.send_tooltip").to_string())
+                                .tooltip(format!(
+                                    "{} · {}",
+                                    t!("preview.send_to_agent"),
+                                    t!("preview.send_tooltip")
+                                ))
                                 .tooltip_placement(gpui_kit::component::Placement::Bottom)
                                 .on_click(cx.listener(|this, _, _, cx| this.send_selection(cx))),
                         ),
+                )
+            })
+            // The range's ends under its slider: start left, end right.
+            .when_some(range_times, |this, (start, end)| {
+                this.child(
+                    h_flex()
+                        .pl(px(CONTROL_LEADING + CONTROL_GAP))
+                        .pr(px(CONTROL_TRAILING + CONTROL_GAP))
+                        .justify_between()
+                        .text_xs()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(start)
+                        .child(end),
                 )
             })
             .into_any_element()
@@ -1463,7 +1559,6 @@ impl PreviewPanel {
                         Button::new("stop-media")
                             .small()
                             .ghost()
-                            .w(px(CONTROL_TRAILING))
                             .icon(gpui_kit::assets::IconName::Close)
                             .label(t!("preview.back_to_video").to_string())
                             .tooltip(t!("preview.back_tooltip").to_string())
@@ -1504,8 +1599,10 @@ impl PreviewPanel {
 }
 
 /// Widths shared by the two control rows, so their sliders start and end on the same lines.
-const CONTROL_LEADING: f32 = 200.;
-const CONTROL_TRAILING: f32 = 104.;
+const CONTROL_LEADING: f32 = 28.;
+const CONTROL_GAP: f32 = 12.;
+/// Icon-only buttons, so the film strip gets the width.
+const CONTROL_TRAILING: f32 = 28.;
 
 /// The stage is black: the GPUI surround and the webviews' own background both match it, so a
 /// page that has not painted yet cannot show white.
@@ -1516,6 +1613,17 @@ fn format_time(t: f32) -> String {
     let minutes = (t / 60.0).floor() as u32;
     let seconds = t - minutes as f32 * 60.0;
     format!("{minutes:02}:{seconds:05.2}")
+}
+
+/// The timeline thumbnails on disk, or none unless every one is there.
+fn read_strip(project: &std::path::Path) -> Vec<Arc<Image>> {
+    (0..STRIP_FRAMES)
+        .map(|index| {
+            let bytes = std::fs::read(library::strip_path(project, index)).ok()?;
+            Some(Arc::new(Image::from_bytes(ImageFormat::Png, bytes)))
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 fn asset_icon(kind: AssetKind) -> gpui_kit::assets::IconName {
@@ -1568,12 +1676,14 @@ impl Render for PreviewPanel {
                 SliderValue::Range(start, end) => (start, end),
                 SliderValue::Single(value) => (0.0, value),
             };
-            t!(
-                "preview.range_times",
-                start = format_time(start * self.duration),
-                end = format_time(end * self.duration)
+            (
+                t!(
+                    "preview.range_start",
+                    t = format_time(start * self.duration)
+                )
+                .to_string(),
+                t!("preview.range_end", t = format_time(end * self.duration)).to_string(),
             )
-            .to_string()
         });
 
         let stage: AnyElement = if self.media.is_some() {
@@ -1604,12 +1714,20 @@ impl Render for PreviewPanel {
             )
             .children(export_banner)
             .child(div().flex_1().min_h_0().bg(gpui_kit::black()).child(stage))
-            .child(if self.media.is_some() {
-                self.media_bar(cx)
-            } else {
-                self.transport_controls(play_icon, can_play, range_times, cx)
-            })
-            .child(self.assets_panel(cx))
+            // Controls and shelf share one half; its basis is the old one-line control bar, so taller
+            // controls (film strip, range rows) come out of the shelf, never the stage.
+            .child(
+                v_flex()
+                    .flex_1()
+                    .flex_basis(px(40.))
+                    .min_h_0()
+                    .child(if self.media.is_some() {
+                        self.media_bar(cx)
+                    } else {
+                        self.transport_controls(play_icon, can_play, range_times, cx)
+                    })
+                    .child(self.assets_panel(cx)),
+            )
             // The stage is a native view, so the hint for an empty film sits under it, not on it.
             .when(
                 self.loaded
