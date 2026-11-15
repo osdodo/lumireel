@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime},
@@ -44,6 +44,8 @@ struct LumiReel {
     selected: Option<PathBuf>,
     /// Whether the project list also draws the projects the user hid.
     show_hidden: bool,
+    /// Project groups the user folded shut; kept in the config across launches.
+    collapsed_groups: HashSet<String>,
     preview: Entity<PreviewPanel>,
     agent: Entity<AgentPanel>,
     capture: Entity<CaptureView>,
@@ -70,6 +72,7 @@ impl LumiReel {
         jobs: flume::Receiver<CaptureJob>,
     ) -> Self {
         let projects = library::list_projects(&config.library_dir);
+        let collapsed_groups = config.collapsed_groups.iter().cloned().collect();
         let preview = cx.new(|cx| PreviewPanel::new(window, cx, server.clone()));
         let agent = cx.new(|_| AgentPanel::new(server.clone(), config.agent_command.clone()));
         let capture = cx.new(|cx| CaptureView::new(window, cx));
@@ -150,6 +153,8 @@ impl LumiReel {
             let command = this.agent.read(cx).command().to_string();
             let mut config = this.config.clone();
             config.agent_command = command;
+            config.collapsed_groups = this.collapsed_groups.iter().cloned().collect();
+            config.collapsed_groups.sort();
             let _ = config.save();
             async {}
         })
@@ -160,6 +165,7 @@ impl LumiReel {
             projects,
             selected: None,
             show_hidden: false,
+            collapsed_groups,
             preview,
             agent,
             capture,
@@ -229,6 +235,196 @@ impl LumiReel {
             self.show_hidden = false;
         }
         cx.notify();
+    }
+
+    /// Fold a group shut, or open it again.
+    fn toggle_group(&mut self, group: &str, cx: &mut Context<Self>) {
+        if !self.collapsed_groups.remove(group) {
+            self.collapsed_groups.insert(group.to_string());
+        }
+        self.remember_collapsed_groups();
+        cx.notify();
+    }
+
+    /// Keep the config's copy in step, so a settings save does not write a stale list.
+    fn remember_collapsed_groups(&mut self) {
+        self.config.collapsed_groups = self.collapsed_groups.iter().cloned().collect();
+        self.config.collapsed_groups.sort();
+    }
+
+    /// Put a project in `group`, or back in the ungrouped list. Returns whether the list changed.
+    fn assign_group(&mut self, path: &Path, group: Option<String>, cx: &mut Context<Self>) -> bool {
+        // A menu can outlive its project: never recreate a folder that just went away.
+        if !self.projects.iter().any(|project| project.path == path) {
+            return false;
+        }
+        if let Err(error) = library::set_group(path, group.as_deref()) {
+            self.error = Some(format!("{error:#}"));
+            cx.notify();
+            return false;
+        }
+        self.error = None;
+        if let Some(project) = self.projects.iter_mut().find(|p| p.path == path) {
+            project.group = group.clone();
+        }
+        // A group the user just moved something into should not stay folded.
+        if let Some(group) = &group {
+            self.collapsed_groups.remove(group);
+        }
+        self.remember_collapsed_groups();
+        cx.notify();
+        true
+    }
+
+    /// Rename a group by rewriting its members' markers; an existing name merges the two groups.
+    fn rename_group(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> bool {
+        let to = to.trim();
+        if to.is_empty() || to == from {
+            return !to.is_empty();
+        }
+        let paths: Vec<PathBuf> = self
+            .projects
+            .iter()
+            .filter(|project| project.group.as_deref() == Some(from))
+            .map(|project| project.path.clone())
+            .collect();
+        for path in &paths {
+            if let Err(error) = library::set_group(path, Some(to)) {
+                self.error = Some(format!("{error:#}"));
+                cx.notify();
+                return false;
+            }
+            if let Some(project) = self
+                .projects
+                .iter_mut()
+                .find(|project| &project.path == path)
+            {
+                project.group = Some(to.to_string());
+            }
+        }
+        if self.collapsed_groups.remove(from) {
+            self.collapsed_groups.insert(to.to_string());
+        }
+        self.remember_collapsed_groups();
+        self.error = None;
+        cx.notify();
+        true
+    }
+
+    /// Dissolve a group without touching the projects: they all become ungrouped.
+    fn ungroup_all(&mut self, group: &str, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self
+            .projects
+            .iter()
+            .filter(|project| project.group.as_deref() == Some(group))
+            .map(|project| project.path.clone())
+            .collect();
+        let mut first_error = None;
+        for path in &paths {
+            match library::set_group(path, None) {
+                Ok(()) => {
+                    if let Some(project) = self.projects.iter_mut().find(|p| &p.path == path) {
+                        project.group = None;
+                    }
+                }
+                Err(error) if first_error.is_none() => first_error = Some(format!("{error:#}")),
+                Err(_) => {}
+            }
+        }
+        self.collapsed_groups.remove(group);
+        self.remember_collapsed_groups();
+        self.error = first_error;
+        cx.notify();
+    }
+
+    /// Ask for a name and put a project into a new group.
+    fn open_new_group_dialog(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preview
+            .update(cx, |preview, cx| preview.hide_while_dialog_open(window, cx));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("projects.group_name_placeholder").to_string())
+        });
+        let weak = cx.entity().downgrade();
+        let first_focus = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first_focus.replace(false) {
+                let focus = input.read(cx).focus_handle(cx).clone();
+                focus.focus(window, cx);
+            }
+            let input = input.clone();
+            let weak = weak.clone();
+            let path = path.clone();
+            dialog
+                .title(t!("projects.new_group").to_string())
+                .w(px(420.))
+                .child(Input::new(&input).bordered(false).focus_bordered(false))
+                .footer(dialog_footer(
+                    Button::new("create-group")
+                        .primary()
+                        .label(t!("projects.create").to_string()),
+                ))
+                .on_ok(move |_, _, cx| {
+                    let name = input.read(cx).value().trim().to_string();
+                    if name.is_empty() {
+                        return false;
+                    }
+                    let Some(this) = weak.upgrade() else {
+                        return false;
+                    };
+                    this.update(cx, |this, cx| {
+                        this.assign_group(&path, Some(name), cx);
+                        this.error.is_none()
+                    })
+                })
+        });
+    }
+
+    /// Rename a group from its header.
+    fn open_rename_group_dialog(
+        &mut self,
+        group: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preview
+            .update(cx, |preview, cx| preview.hide_while_dialog_open(window, cx));
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(group.clone()));
+        let weak = cx.entity().downgrade();
+        let first_focus = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first_focus.replace(false) {
+                let focus = input.read(cx).focus_handle(cx).clone();
+                focus.focus(window, cx);
+            }
+            let input = input.clone();
+            let weak = weak.clone();
+            let group = group.clone();
+            dialog
+                .title(t!("projects.rename_group").to_string())
+                .w(px(420.))
+                .child(Input::new(&input).bordered(false).focus_bordered(false))
+                .footer(dialog_footer(
+                    Button::new("rename-group")
+                        .primary()
+                        .label(t!("common.save").to_string()),
+                ))
+                .on_ok(move |_, _, cx| {
+                    let name = input.read(cx).value().trim().to_string();
+                    let Some(this) = weak.upgrade() else {
+                        return false;
+                    };
+                    this.update(cx, |this, cx| {
+                        let renamed = this.rename_group(&group, &name, cx);
+                        renamed && this.error.is_none()
+                    })
+                })
+        });
     }
 
     fn refresh_covers(&mut self, cx: &mut Context<Self>) {
@@ -534,151 +730,371 @@ impl LumiReel {
         });
     }
 
-    fn projects_panel(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// One project in the sidebar. `groups` feeds the “move to group” submenu.
+    fn project_row(
+        &self,
+        index: usize,
+        project: &Project,
+        groups: &[String],
+        now: SystemTime,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         type Action = fn(&mut LumiReel, Project, &mut Window, &mut Context<LumiReel>);
-        let now = std::time::SystemTime::now();
-        let visible = self
-            .projects
-            .iter()
-            .enumerate()
-            .filter(|(_, project)| self.show_hidden || !project.hidden);
-        let rows = visible.map(|(index, project)| {
-            let active = self.selected.as_ref() == Some(&project.path);
-            let path = project.path.clone();
-            let hidden = project.hidden;
-            let weak = cx.entity().downgrade();
-            let menu_weak = weak.clone();
-            let menu_path = path.clone();
-            let preview = self.preview.clone();
-            h_flex()
-                .id(("project", index))
-                .px_2()
-                .py_1p5()
-                .gap_2()
-                .items_center()
-                .rounded(cx.theme().radius)
-                .cursor_pointer()
-                .when(active, |this| this.bg(cx.theme().sidebar_accent))
-                .when(!active, |this| {
-                    this.hover(|this| this.bg(cx.theme().sidebar_accent.opacity(0.5)))
-                })
-                .when(hidden, |this| this.opacity(0.55))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(64.))
-                        .h(px(36.))
-                        .rounded(px(4.))
-                        .overflow_hidden()
-                        .bg(cx.theme().muted)
-                        .border_1()
-                        .border_color(if active {
-                            cx.theme().primary.opacity(0.6)
-                        } else {
-                            cx.theme().border
-                        })
-                        .relative()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .map(|this| match self.covers.get(&project.path) {
-                            Some((_, image)) => this
-                                .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover)),
-                            None => this.child(
-                                Icon::new(IconName::Folder)
-                                    .small()
-                                    .text_color(cx.theme().muted_foreground),
-                            ),
-                        })
-                        .when_some(project.duration, |this, duration| {
-                            this.child(
-                                div()
-                                    .absolute()
-                                    .right(px(2.))
-                                    .bottom(px(2.))
-                                    .px(px(3.))
-                                    .py(px(1.))
-                                    .rounded(px(2.))
-                                    .bg(cx.theme().background.opacity(0.78))
-                                    .text_size(px(9.))
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .text_color(cx.theme().foreground)
-                                    .child(library::duration_label(duration)),
-                            )
-                        }),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .truncate()
-                                .when(active, |this| this.font_medium())
-                                .child(project.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(library::ago(project.modified, now)),
-                        ),
-                )
-                .when(hidden, |this| {
-                    this.child(
-                        Icon::new(AssetIconName::EyeOff)
-                            .xsmall()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                })
-                .on_click(move |_, window, cx| {
-                    Self::with_project(&weak, &path, window, cx, |this, project, window, cx| {
-                        this.error = None;
-                        this.select_project(&project, window, cx);
-                    });
-                })
-                .context_menu(move |menu, window, cx| {
-                    PreviewPanel::hide_under_menu(preview.clone(), window, cx);
-
-                    let item = |label: String, icon: Option<Icon>, action: Action| {
-                        let weak = menu_weak.clone();
-                        let path = menu_path.clone();
-                        let item = PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                            Self::with_project(&weak, &path, window, cx, action);
-                        });
-                        match icon {
-                            Some(icon) => item.icon(icon),
-                            None => item,
-                        }
-                    };
-                    let hide_or_show = if hidden {
-                        item(
-                            t!("projects.show").to_string(),
-                            Some(Icon::new(AssetIconName::Eye)),
-                            |this, project, _, cx| this.show_project(&project.path, cx),
-                        )
+        let active = self.selected.as_ref() == Some(&project.path);
+        let path = project.path.clone();
+        let hidden = project.hidden;
+        let project_group = project.group.clone();
+        let groups = groups.to_vec();
+        let weak = cx.entity().downgrade();
+        let menu_weak = weak.clone();
+        let menu_path = path.clone();
+        let preview = self.preview.clone();
+        h_flex()
+            .id(("project", index))
+            .px_2()
+            .py_1p5()
+            .gap_2()
+            .items_center()
+            .rounded(cx.theme().radius)
+            .cursor_pointer()
+            .when(active, |this| this.bg(cx.theme().sidebar_accent))
+            .when(!active, |this| {
+                this.hover(|this| this.bg(cx.theme().sidebar_accent.opacity(0.5)))
+            })
+            .when(hidden, |this| this.opacity(0.55))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(64.))
+                    .h(px(36.))
+                    .rounded(px(4.))
+                    .overflow_hidden()
+                    .bg(cx.theme().muted)
+                    .border_1()
+                    .border_color(if active {
+                        cx.theme().primary.opacity(0.6)
                     } else {
-                        item(
-                            t!("projects.hide").to_string(),
-                            Some(Icon::new(AssetIconName::EyeOff)),
-                            |this, project, _, cx| this.hide_project(&project.path, cx),
+                        cx.theme().border
+                    })
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .map(|this| match self.covers.get(&project.path) {
+                        Some((_, image)) => {
+                            this.child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
+                        }
+                        None => this.child(
+                            Icon::new(IconName::Folder)
+                                .small()
+                                .text_color(cx.theme().muted_foreground),
+                        ),
+                    })
+                    .when_some(project.duration, |this, duration| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .right(px(2.))
+                                .bottom(px(2.))
+                                .px(px(3.))
+                                .py(px(1.))
+                                .rounded(px(2.))
+                                .bg(cx.theme().background.opacity(0.78))
+                                .text_size(px(9.))
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(cx.theme().foreground)
+                                .child(library::duration_label(duration)),
                         )
-                    };
-                    menu.item(item(
+                    }),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .truncate()
+                            .when(active, |this| this.font_medium())
+                            .child(project.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(library::ago(project.modified, now)),
+                    ),
+            )
+            .when(hidden, |this| {
+                this.child(
+                    Icon::new(AssetIconName::EyeOff)
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                )
+            })
+            .on_click(move |_, window, cx| {
+                Self::with_project(&weak, &path, window, cx, |this, project, window, cx| {
+                    this.error = None;
+                    this.select_project(&project, window, cx);
+                });
+            })
+            .context_menu(move |menu, window, cx| {
+                PreviewPanel::hide_under_menu(preview.clone(), window, cx);
+
+                let item = |label: String, icon: Option<Icon>, action: Action| {
+                    let weak = menu_weak.clone();
+                    let path = menu_path.clone();
+                    let item = PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                        Self::with_project(&weak, &path, window, cx, action);
+                    });
+                    match icon {
+                        Some(icon) => item.icon(icon),
+                        None => item,
+                    }
+                };
+                let hide_or_show = if hidden {
+                    item(
+                        t!("projects.show").to_string(),
+                        Some(Icon::new(AssetIconName::Eye)),
+                        |this, project, _, cx| this.show_project(&project.path, cx),
+                    )
+                } else {
+                    item(
+                        t!("projects.hide").to_string(),
+                        Some(Icon::new(AssetIconName::EyeOff)),
+                        |this, project, _, cx| this.hide_project(&project.path, cx),
+                    )
+                };
+                let menu = menu
+                    .item(item(
                         i18n::reveal(),
                         Some(Icon::new(IconName::FolderOpen)),
                         |_, project, _, _| library::reveal_in_file_manager(&project.path),
                     ))
                     .item(hide_or_show)
-                    .separator()
-                    .item(item(
-                        i18n::trash(),
-                        Some(Icon::new(IconName::Delete)),
-                        |this, project, window, cx| this.confirm_trash(project.path, window, cx),
-                    ))
+                    .separator();
+                let submenu_weak = menu_weak.clone();
+                let submenu_path = menu_path.clone();
+                let submenu_group = project_group.clone();
+                let submenu_groups = groups.clone();
+                menu.submenu(
+                    t!("projects.move_to_group").to_string(),
+                    window,
+                    cx,
+                    move |submenu, _, _| {
+                        let choose = |label: String, checked: bool, target: Option<String>| {
+                            let weak = submenu_weak.clone();
+                            let path = submenu_path.clone();
+                            PopupMenuItem::new(label)
+                                .checked(checked)
+                                .icon(Icon::new(AssetIconName::Folder))
+                                .on_click(move |_, _, cx| {
+                                    let target = target.clone();
+                                    if let Some(this) = weak.upgrade() {
+                                        this.update(cx, |this, cx| {
+                                            this.assign_group(&path, target.clone(), cx);
+                                        });
+                                    }
+                                })
+                        };
+                        let mut submenu = submenu;
+                        if submenu_group.is_some() {
+                            submenu = submenu.item(choose(
+                                t!("projects.ungrouped").to_string(),
+                                false,
+                                None,
+                            ));
+                        }
+                        for group in &submenu_groups {
+                            submenu = submenu.item(choose(
+                                group.clone(),
+                                submenu_group.as_deref() == Some(group.as_str()),
+                                Some(group.clone()),
+                            ));
+                        }
+                        if !submenu_groups.is_empty() {
+                            submenu = submenu.separator();
+                        }
+                        let new_weak = submenu_weak.clone();
+                        let new_path = submenu_path.clone();
+                        submenu.item(
+                            PopupMenuItem::new(t!("projects.new_group").to_string())
+                                .icon(Icon::new(AssetIconName::FolderPlus))
+                                .on_click(move |_, window, cx| {
+                                    if let Some(this) = new_weak.upgrade() {
+                                        let path = new_path.clone();
+                                        this.update(cx, |this, cx| {
+                                            this.open_new_group_dialog(path, window, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                    },
+                )
+                .separator()
+                .item(item(
+                    i18n::trash(),
+                    Some(Icon::new(IconName::Delete)),
+                    |this, project, window, cx| this.confirm_trash(project.path, window, cx),
+                ))
+            })
+            .into_any_element()
+    }
+
+    /// A group's header, plus a quiet count. Named groups fold; the ungrouped list does not.
+    fn group_header(
+        &self,
+        group: Option<&str>,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(name) = group else {
+            return h_flex()
+                .h(px(26.))
+                .px_2()
+                .gap_1()
+                .items_center()
+                .child(
+                    Icon::new(AssetIconName::Folder)
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("projects.ungrouped").to_string()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(count.to_string()),
+                )
+                .into_any_element();
+        };
+
+        let folded = self.collapsed_groups.contains(name);
+        let weak = cx.entity().downgrade();
+        let menu_weak = weak.clone();
+        let menu_name = name.to_string();
+        let name = name.to_string();
+        let click_name = name.clone();
+        let preview = self.preview.clone();
+        h_flex()
+            .id(format!("group-{name}"))
+            .h(px(26.))
+            .px_2()
+            .gap_1()
+            .items_center()
+            .rounded(cx.theme().radius)
+            .cursor_pointer()
+            .hover(|this| this.bg(cx.theme().sidebar_accent.opacity(0.5)))
+            .child(
+                Icon::new(if folded {
+                    AssetIconName::ChevronRight
+                } else {
+                    AssetIconName::ChevronDown
                 })
+                .xsmall()
+                .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(name),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(count.to_string()),
+            )
+            .on_click(move |_, _, cx| {
+                if let Some(this) = weak.upgrade() {
+                    let name = click_name.clone();
+                    this.update(cx, |this, cx| this.toggle_group(&name, cx));
+                }
+            })
+            .context_menu(move |menu, window, cx| {
+                PreviewPanel::hide_under_menu(preview.clone(), window, cx);
+                let rename_weak = menu_weak.clone();
+                let rename_name = menu_name.clone();
+                let ungroup_weak = menu_weak.clone();
+                let ungroup_name = menu_name.clone();
+                menu.item(
+                    PopupMenuItem::new(t!("projects.rename_group").to_string())
+                        .icon(Icon::new(AssetIconName::Pencil))
+                        .on_click(move |_, window, cx| {
+                            if let Some(this) = rename_weak.upgrade() {
+                                let name = rename_name.clone();
+                                this.update(cx, |this, cx| {
+                                    this.open_rename_group_dialog(name, window, cx);
+                                });
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(t!("projects.ungroup").to_string())
+                        .icon(Icon::new(AssetIconName::FolderMinus))
+                        .on_click(move |_, _, cx| {
+                            if let Some(this) = ungroup_weak.upgrade() {
+                                let name = ungroup_name.clone();
+                                this.update(cx, |this, cx| this.ungroup_all(&name, cx));
+                            }
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn group_section(
+        &self,
+        group: Option<&str>,
+        members: Vec<(usize, &Project)>,
+        groups: &[String],
+        now: SystemTime,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let folded = group.is_some_and(|name| self.collapsed_groups.contains(name));
+        let count = members.len();
+        let mut children = vec![self.group_header(group, count, cx)];
+        if !folded {
+            for (index, project) in members {
+                children.push(self.project_row(index, project, groups, now, cx));
+            }
+        }
+        v_flex().gap_0p5().children(children).into_any_element()
+    }
+
+    fn projects_panel(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let now = std::time::SystemTime::now();
+        let visible: Vec<(usize, &Project)> = self
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(_, project)| self.show_hidden || !project.hidden)
+            .collect();
+        let mut all_groups: Vec<String> = self
+            .projects
+            .iter()
+            .filter_map(|project| project.group.clone())
+            .collect();
+        all_groups.sort_by(|a, b| {
+            a.to_lowercase()
+                .cmp(&b.to_lowercase())
+                .then_with(|| a.cmp(b))
         });
+        all_groups.dedup();
 
         let hidden_count = self
             .projects
@@ -686,6 +1102,40 @@ impl LumiReel {
             .filter(|project| project.hidden)
             .count();
         let all_hidden = !self.projects.is_empty() && self.projects.iter().all(|p| p.hidden);
+        let has_groups = visible.iter().any(|(_, project)| project.group.is_some());
+        let list: AnyElement = if has_groups {
+            let mut named: BTreeMap<String, Vec<(usize, &Project)>> = BTreeMap::new();
+            let mut ungrouped = Vec::new();
+            for (index, project) in visible {
+                match &project.group {
+                    Some(group) => named
+                        .entry(group.clone())
+                        .or_default()
+                        .push((index, project)),
+                    None => ungrouped.push((index, project)),
+                }
+            }
+            let mut named: Vec<_> = named.into_iter().collect();
+            named.sort_by(|a, b| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+            let mut sections = Vec::new();
+            for (name, members) in named {
+                sections.push(self.group_section(Some(&name), members, &all_groups, now, cx));
+            }
+            if !ungrouped.is_empty() {
+                sections.push(self.group_section(None, ungrouped, &all_groups, now, cx));
+            }
+            v_flex().gap_2().children(sections).into_any_element()
+        } else {
+            let mut rows = Vec::new();
+            for (index, project) in visible {
+                rows.push(self.project_row(index, project, &all_groups, now, cx));
+            }
+            v_flex().gap_0p5().children(rows).into_any_element()
+        };
 
         v_flex()
             .size_full()
@@ -783,7 +1233,7 @@ impl LumiReel {
                                 ),
                         )
                     })
-                    .child(v_flex().gap_0p5().children(rows)),
+                    .child(list),
             )
             .when_some(self.error.clone(), |this, error| {
                 this.child(

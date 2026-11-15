@@ -10,6 +10,9 @@ pub struct Config {
     /// The interface language last chosen in the app. `None` means follow the system language.
     #[serde(default)]
     pub locale: Option<String>,
+    /// Project groups the user collapsed, so the list opens the same way next time.
+    #[serde(default)]
+    pub collapsed_groups: Vec<String>,
     /// OpenAI-compatible endpoints used to generate speech, images and video.
     #[serde(default)]
     pub services: Services,
@@ -74,6 +77,7 @@ impl Default for Config {
             library_dir: default_library_dir(),
             agent_command: "claude".to_string(),
             locale: None,
+            collapsed_groups: Vec::new(),
             services: Services::default(),
         }
     }

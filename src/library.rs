@@ -16,6 +16,8 @@ pub struct Project {
     pub duration: Option<f64>,
     /// The user hid it from the project list; it is still on disk.
     pub hidden: bool,
+    /// The list section this project belongs to; `None` is the ungrouped list.
+    pub group: Option<String>,
 }
 
 /// Every first-level, non-hidden directory under the library, newest first. Projects the
@@ -37,12 +39,14 @@ pub fn list_projects(root: &Path) -> Vec<Project> {
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             let duration = duration(&path);
             let hidden = is_hidden(&path);
+            let group = group(&path);
             Project {
                 name,
                 path,
                 modified,
                 duration,
                 hidden,
+                group,
             }
         })
         .collect::<Vec<_>>();
@@ -100,6 +104,7 @@ pub fn create_project(root: &Path, name: &str) -> Result<Project> {
         modified,
         duration: None,
         hidden: false,
+        group: None,
     })
 }
 
@@ -124,6 +129,32 @@ pub fn set_hidden(project: &Path, hidden: bool) -> std::io::Result<()> {
         fs::remove_file(marker)
     } else {
         Ok(())
+    }
+}
+
+/// Where the project's group name is kept. Like hiding, a group is a marker rather than a
+/// move: the folder stays put and the grouping travels with it.
+fn group_path(project: &Path) -> PathBuf {
+    project.join(".reel").join("group")
+}
+
+/// The group this project is listed under, if any.
+pub fn group(project: &Path) -> Option<String> {
+    let text = fs::read_to_string(group_path(project)).ok()?;
+    let name = text.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Put a project in a group, or back in the ungrouped list when `group` is empty or `None`.
+pub fn set_group(project: &Path, group: Option<&str>) -> std::io::Result<()> {
+    let marker = group_path(project);
+    match group.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => {
+            fs::create_dir_all(project.join(".reel"))?;
+            fs::write(marker, format!("{name}\n"))
+        }
+        None if marker.exists() => fs::remove_file(marker),
+        None => Ok(()),
     }
 }
 
@@ -353,6 +384,19 @@ mod tests {
         assert!(list_projects(&root).iter().all(|p| !p.hidden));
         // Unhiding an already visible project is a no-op.
         set_hidden(&project.path, false).unwrap();
+
+        // Groups are a marker too: written into the project, read back by the list, and
+        // removed when the project returns to the ungrouped list.
+        assert_eq!(group(&project.path), None);
+        set_group(&project.path, Some("  Trailers  ")).unwrap();
+        assert_eq!(group(&project.path).as_deref(), Some("Trailers"));
+        let listed = list_projects(&root);
+        let listed = listed.iter().find(|p| p.name == "my-film").unwrap();
+        assert_eq!(listed.group.as_deref(), Some("Trailers"));
+        set_group(&project.path, Some("   ")).unwrap();
+        assert_eq!(group(&project.path), None);
+        set_group(&project.path, None).unwrap();
+        assert!(!group_path(&project.path).exists());
 
         assert_eq!(saved_agent(&project.path), None);
         save_agent(&project.path, "  codex --full-auto ").unwrap();
