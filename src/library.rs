@@ -14,9 +14,12 @@ pub struct Project {
     pub modified: SystemTime,
     /// The film's length in seconds, once the preview or a capture has measured it.
     pub duration: Option<f64>,
+    /// The user hid it from the project list; it is still on disk.
+    pub hidden: bool,
 }
 
-/// Every first-level, non-hidden directory under the library, newest first.
+/// Every first-level, non-hidden directory under the library, newest first. Projects the
+/// user hid are included with `hidden` set; the list decides whether to draw them.
 pub fn list_projects(root: &Path) -> Vec<Project> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
@@ -33,11 +36,13 @@ pub fn list_projects(root: &Path) -> Vec<Project> {
                 .and_then(|m| m.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             let duration = duration(&path);
+            let hidden = is_hidden(&path);
             Project {
                 name,
                 path,
                 modified,
                 duration,
+                hidden,
             }
         })
         .collect::<Vec<_>>();
@@ -94,7 +99,32 @@ pub fn create_project(root: &Path, name: &str) -> Result<Project> {
         path,
         modified,
         duration: None,
+        hidden: false,
     })
+}
+
+/// The marker that keeps a project out of the list without touching its folder.
+fn hidden_path(project: &Path) -> PathBuf {
+    project.join(".reel").join("hidden")
+}
+
+/// Whether the user hid this project from the list.
+pub fn is_hidden(project: &Path) -> bool {
+    hidden_path(project).is_file()
+}
+
+/// Hide a project from the list, or put it back. Hiding is a marker, not a move:
+/// it travels with the folder and is easy to undo.
+pub fn set_hidden(project: &Path, hidden: bool) -> std::io::Result<()> {
+    let marker = hidden_path(project);
+    if hidden {
+        fs::create_dir_all(project.join(".reel"))?;
+        fs::write(marker, b"")
+    } else if marker.exists() {
+        fs::remove_file(marker)
+    } else {
+        Ok(())
+    }
 }
 
 /// The agent command this project runs, kept in the project so it travels with the folder.
@@ -310,6 +340,19 @@ mod tests {
         let listed = list_projects(&root);
         let listed = listed.iter().find(|p| p.name == "my-film").unwrap();
         assert_eq!(listed.duration, Some(8.0));
+
+        // Hiding keeps the folder in place; it only adds a marker, and unhiding removes it.
+        assert!(!is_hidden(&project.path));
+        set_hidden(&project.path, true).unwrap();
+        assert!(is_hidden(&project.path));
+        let listed = list_projects(&root);
+        let listed = listed.iter().find(|p| p.name == "my-film").unwrap();
+        assert!(listed.hidden);
+        set_hidden(&project.path, false).unwrap();
+        assert!(!is_hidden(&project.path));
+        assert!(list_projects(&root).iter().all(|p| !p.hidden));
+        // Unhiding an already visible project is a no-op.
+        set_hidden(&project.path, false).unwrap();
 
         assert_eq!(saved_agent(&project.path), None);
         save_agent(&project.path, "  codex --full-auto ").unwrap();

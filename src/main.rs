@@ -18,7 +18,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
+use gpui_kit::{assets::IconName as AssetIconName, *};
 use rand::RngCore;
 
 use lumireel::{
@@ -42,6 +42,8 @@ struct LumiReel {
     config: Config,
     projects: Vec<Project>,
     selected: Option<PathBuf>,
+    /// Whether the project list also draws the projects the user hid.
+    show_hidden: bool,
     preview: Entity<PreviewPanel>,
     agent: Entity<AgentPanel>,
     capture: Entity<CaptureView>,
@@ -157,6 +159,7 @@ impl LumiReel {
             config,
             projects,
             selected: None,
+            show_hidden: false,
             preview,
             agent,
             capture,
@@ -171,7 +174,7 @@ impl LumiReel {
         };
         this.refresh_covers(cx);
 
-        if let Some(project) = this.projects.first().cloned() {
+        if let Some(project) = this.first_visible_project() {
             this.select_project(&project, window, cx);
         }
         this
@@ -187,6 +190,45 @@ impl LumiReel {
         {
             self.selected = None;
         }
+    }
+
+    /// The first project the list is currently drawing: hidden ones only count when shown.
+    fn first_visible_project(&self) -> Option<Project> {
+        self.projects
+            .iter()
+            .find(|project| self.show_hidden || !project.hidden)
+            .cloned()
+    }
+
+    /// Take a project out of the list without moving or deleting its folder.
+    fn hide_project(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Err(error) = library::set_hidden(path, true) {
+            self.error = Some(format!("{error:#}"));
+            cx.notify();
+            return;
+        }
+        self.error = None;
+        if let Some(project) = self.projects.iter_mut().find(|p| p.path == path) {
+            project.hidden = true;
+        }
+        cx.notify();
+    }
+
+    /// Put a hidden project back in the list.
+    fn show_project(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Err(error) = library::set_hidden(path, false) {
+            self.error = Some(format!("{error:#}"));
+            cx.notify();
+            return;
+        }
+        self.error = None;
+        if let Some(project) = self.projects.iter_mut().find(|p| p.path == path) {
+            project.hidden = false;
+        }
+        if self.projects.iter().all(|project| !project.hidden) {
+            self.show_hidden = false;
+        }
+        cx.notify();
     }
 
     fn refresh_covers(&mut self, cx: &mut Context<Self>) {
@@ -463,7 +505,7 @@ impl LumiReel {
         let was_selected = self.selected.as_deref() == Some(path);
         self.refresh_projects();
         if was_selected {
-            match self.projects.first().cloned() {
+            match self.first_visible_project() {
                 Some(next) => self.select_project(&next, window, cx),
                 None => {
                     self.selected = None;
@@ -495,9 +537,15 @@ impl LumiReel {
     fn projects_panel(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         type Action = fn(&mut LumiReel, Project, &mut Window, &mut Context<LumiReel>);
         let now = std::time::SystemTime::now();
-        let rows = self.projects.iter().enumerate().map(|(index, project)| {
+        let visible = self
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(_, project)| self.show_hidden || !project.hidden);
+        let rows = visible.map(|(index, project)| {
             let active = self.selected.as_ref() == Some(&project.path);
             let path = project.path.clone();
+            let hidden = project.hidden;
             let weak = cx.entity().downgrade();
             let menu_weak = weak.clone();
             let menu_path = path.clone();
@@ -514,6 +562,7 @@ impl LumiReel {
                 .when(!active, |this| {
                     this.hover(|this| this.bg(cx.theme().sidebar_accent.opacity(0.5)))
                 })
+                .when(hidden, |this| this.opacity(0.55))
                 .child(
                     div()
                         .flex_none()
@@ -576,6 +625,13 @@ impl LumiReel {
                                 .child(library::ago(project.modified, now)),
                         ),
                 )
+                .when(hidden, |this| {
+                    this.child(
+                        Icon::new(AssetIconName::EyeOff)
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                })
                 .on_click(move |_, window, cx| {
                     Self::with_project(&weak, &path, window, cx, |this, project, window, cx| {
                         this.error = None;
@@ -585,7 +641,7 @@ impl LumiReel {
                 .context_menu(move |menu, window, cx| {
                     PreviewPanel::hide_under_menu(preview.clone(), window, cx);
 
-                    let item = |label: String, icon: Option<IconName>, action: Action| {
+                    let item = |label: String, icon: Option<Icon>, action: Action| {
                         let weak = menu_weak.clone();
                         let path = menu_path.clone();
                         let item = PopupMenuItem::new(label).on_click(move |_, window, cx| {
@@ -596,19 +652,40 @@ impl LumiReel {
                             None => item,
                         }
                     };
+                    let hide_or_show = if hidden {
+                        item(
+                            t!("projects.show").to_string(),
+                            Some(Icon::new(AssetIconName::Eye)),
+                            |this, project, _, cx| this.show_project(&project.path, cx),
+                        )
+                    } else {
+                        item(
+                            t!("projects.hide").to_string(),
+                            Some(Icon::new(AssetIconName::EyeOff)),
+                            |this, project, _, cx| this.hide_project(&project.path, cx),
+                        )
+                    };
                     menu.item(item(
                         i18n::reveal(),
-                        Some(IconName::FolderOpen),
+                        Some(Icon::new(IconName::FolderOpen)),
                         |_, project, _, _| library::reveal_in_file_manager(&project.path),
                     ))
+                    .item(hide_or_show)
                     .separator()
                     .item(item(
                         i18n::trash(),
-                        Some(IconName::Delete),
+                        Some(Icon::new(IconName::Delete)),
                         |this, project, window, cx| this.confirm_trash(project.path, window, cx),
                     ))
                 })
         });
+
+        let hidden_count = self
+            .projects
+            .iter()
+            .filter(|project| project.hidden)
+            .count();
+        let all_hidden = !self.projects.is_empty() && self.projects.iter().all(|p| p.hidden);
 
         v_flex()
             .size_full()
@@ -617,16 +694,45 @@ impl LumiReel {
             .border_color(cx.theme().sidebar_border)
             .child(
                 panel_header(t!("projects.title").to_string(), cx).child(
-                    Button::new("new-project")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Plus)
-                        .tooltip(t!("projects.new").to_string())
-                        // The preview is a native view at the right edge; keep hints inside the list.
-                        .tooltip_placement(gpui_kit::component::Placement::Left)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_new_project_dialog(window, cx);
-                        })),
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .when(hidden_count > 0, |this| {
+                            this.child(
+                                Button::new("toggle-hidden")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(if self.show_hidden {
+                                        AssetIconName::EyeOff
+                                    } else {
+                                        AssetIconName::Eye
+                                    })
+                                    .toggled(self.show_hidden)
+                                    .tooltip(if self.show_hidden {
+                                        t!("projects.hide_hidden").to_string()
+                                    } else {
+                                        t!("projects.show_hidden").to_string()
+                                    })
+                                    // The preview is a native view at the right edge; keep hints inside the list.
+                                    .tooltip_placement(gpui_kit::component::Placement::Left)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_hidden = !this.show_hidden;
+                                        cx.notify();
+                                    })),
+                            )
+                        })
+                        .child(
+                            Button::new("new-project")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Plus)
+                                .tooltip(t!("projects.new").to_string())
+                                // The preview is a native view at the right edge; keep hints inside the list.
+                                .tooltip_placement(gpui_kit::component::Placement::Left)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_new_project_dialog(window, cx);
+                                })),
+                        ),
                 ),
             )
             .child(
@@ -652,6 +758,27 @@ impl LumiReel {
                                         .label(t!("projects.new").to_string())
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.open_new_project_dialog(window, cx);
+                                        })),
+                                ),
+                        )
+                    })
+                    .when(all_hidden && !self.show_hidden, |this| {
+                        this.child(
+                            v_flex()
+                                .items_center()
+                                .gap_3()
+                                .pt_8()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("projects.all_hidden").to_string())
+                                .child(
+                                    Button::new("show-hidden-empty")
+                                        .small()
+                                        .icon(AssetIconName::Eye)
+                                        .label(t!("projects.show_hidden").to_string())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_hidden = true;
+                                            cx.notify();
                                         })),
                                 ),
                         )
