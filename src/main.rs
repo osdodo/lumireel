@@ -757,19 +757,24 @@ impl Render for LumiReel {
                 ),
             )
             .child(
-                h_resizable("main")
-                    .with_state(&self.main_columns)
-                    .child(
-                        resizable_panel()
-                            .size(projects_width)
-                            .child(self.projects_panel(window, cx)),
-                    )
-                    .child(resizable_panel().child(self.preview.clone()))
-                    .child(
-                        resizable_panel()
-                            .size(agent_width)
-                            .child(self.agent.clone()),
-                    ),
+                // The group sizes itself to 100%, so it needs a flex parent that owns the
+                // space left under the title bar. Without one it runs past the window and
+                // the bottom of every column is clipped, scrolling or not.
+                div().flex_1().min_h_0().child(
+                    h_resizable("main")
+                        .with_state(&self.main_columns)
+                        .child(
+                            resizable_panel()
+                                .size(projects_width)
+                                .child(self.projects_panel(window, cx)),
+                        )
+                        .child(resizable_panel().child(self.preview.clone()))
+                        .child(
+                            resizable_panel()
+                                .size(agent_width)
+                                .child(self.agent.clone()),
+                        ),
+                ),
             )
             .child(self.capture.clone())
     }
