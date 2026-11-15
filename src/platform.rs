@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn path_round_trips_with_platform_separators_and_spaces() {
         let bin = PathBuf::from(if cfg!(windows) {
-            r"C:\Program Files\LumiReel"
+            r"C:\Program Files\lumireel"
         } else {
             "/opt/Lumi Reel/bin"
         });

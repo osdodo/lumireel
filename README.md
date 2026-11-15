@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" alt="LumiReel" width="128" height="128">
+  <img src="assets/logo.png" alt="lumireel" width="128" height="128">
 </p>
 
-<h1 align="center">LumiReel</h1>
+<h1 align="center">lumireel</h1>
 
 <p align="center">
   Make videos with a coding agent — every frame is code.
@@ -20,12 +20,12 @@
 
 ---
 
-LumiReel is a native desktop app for producing videos together with an AI coding agent. A video is
-a small, deterministic HTML program; you describe what you want, the agent writes it, and LumiReel
+lumireel is a native desktop app for producing videos together with an AI coding agent. A video is
+a small, deterministic HTML program; you describe what you want, the agent writes it, and lumireel
 previews and renders it.
 
 <p align="center">
-  <img src="assets/demo.gif" alt="LumiReel demo" width="880">
+  <img src="assets/demo.gif" alt="lumireel demo" width="880">
 </p>
 
 ## Features
@@ -53,7 +53,7 @@ window.reel.paint = (t) => {
 };
 ```
 
-Because frames depend only on `t`, LumiReel can seek, sample and render without playing the video
+Because frames depend only on `t`, lumireel can seek, sample and render without playing the video
 in real time.
 
 ## Install
@@ -89,7 +89,7 @@ the binary on your `PATH`. Verify the install with `ffmpeg -version`.
 
 ## Usage
 
-1. Launch LumiReel and click **New Project**. The project starts from a 3-second template.
+1. Launch lumireel and click **New Project**. The project starts from a 3-second template.
 2. In the agent terminal, describe the video you want.
 3. Watch the preview update as the agent edits. Select a range or region to give it precise feedback.
 4. Render the final video with `reel render`.

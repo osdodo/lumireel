@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" alt="LumiReel" width="128" height="128">
+  <img src="assets/logo.png" alt="lumireel" width="128" height="128">
 </p>
 
-<h1 align="center">LumiReel</h1>
+<h1 align="center">lumireel</h1>
 
 <p align="center">
   与编码智能体一起做视频 —— 每一帧都是代码。
@@ -20,11 +20,11 @@
 
 ---
 
-LumiReel 是一款原生桌面应用，让你和 AI 编码智能体协作制作视频。一个视频就是一段小而确定的 HTML
-程序：你描述想要的效果，智能体把它写出来，LumiReel 负责预览和渲染。
+lumireel 是一款原生桌面应用，让你和 AI 编码智能体协作制作视频。一个视频就是一段小而确定的 HTML
+程序：你描述想要的效果，智能体把它写出来，lumireel 负责预览和渲染。
 
 <p align="center">
-  <img src="assets/demo.gif" alt="LumiReel 演示" width="880">
+  <img src="assets/demo.gif" alt="lumireel 演示" width="880">
 </p>
 
 ## 特性
@@ -49,7 +49,7 @@ window.reel.paint = (t) => {
 };
 ```
 
-因为帧只依赖 `t`，LumiReel 无需实时播放即可跳转、采样和渲染。
+因为帧只依赖 `t`，lumireel 无需实时播放即可跳转、采样和渲染。
 
 ## 安装
 
@@ -84,7 +84,7 @@ Windows（`.exe` 安装包）和 Linux（`.deb` / `.rpm`）的构建产物附在
 
 ## 使用
 
-1. 启动 LumiReel 并点击 **新建项目**。项目会从一个 3 秒的模板开始。
+1. 启动 lumireel 并点击 **新建项目**。项目会从一个 3 秒的模板开始。
 2. 在智能体终端里描述你想要的视频。
 3. 智能体编辑时，观察预览的更新。选中一段时间或一块区域，给它精确的反馈。
 4. 用 `reel render` 渲染最终视频。

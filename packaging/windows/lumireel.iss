@@ -9,11 +9,11 @@
 #endif
 
 [Setup]
-AppName=LumiReel
+AppName=lumireel
 AppVersion={#MyAppVersion}
 AppPublisher=osdodo
-DefaultDirName={autopf}\LumiReel
-DefaultGroupName=LumiReel
+DefaultDirName={autopf}\lumireel
+DefaultGroupName=lumireel
 UninstallDisplayIcon={app}\lumireel.exe
 OutputDir=..\..\dist
 OutputBaseFilename=lumireel-{#MyAppVersion}-windows-{#MyArch}
@@ -29,11 +29,11 @@ Source: "{#MySource}\lumireel.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MySource}\reel.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\LumiReel"; Filename: "{app}\lumireel.exe"
-Name: "{autodesktop}\LumiReel"; Filename: "{app}\lumireel.exe"; Tasks: desktopicon
+Name: "{group}\lumireel"; Filename: "{app}\lumireel.exe"
+Name: "{autodesktop}\lumireel"; Filename: "{app}\lumireel.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Run]
-Filename: "{app}\lumireel.exe"; Description: "{cm:LaunchProgram,LumiReel}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\lumireel.exe"; Description: "{cm:LaunchProgram,lumireel}"; Flags: nowait postinstall skipifsilent

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build dist/LumiReel.app: release binaries (lumireel + reel), Info.plist and icon,
+# Build dist/lumireel.app: release binaries (lumireel + reel), Info.plist and icon,
 # then pack it as the drag-to-install DMG the release workflow uploads.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 arch=$(uname -m)
-app=dist/LumiReel.app
+app=dist/lumireel.app
 dmg=dist/lumireel-$version-macos-$arch.dmg
 
 cargo build --release --bins
@@ -22,8 +22,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>LumiReel</string>
-  <key>CFBundleDisplayName</key><string>LumiReel</string>
+  <key>CFBundleName</key><string>lumireel</string>
+  <key>CFBundleDisplayName</key><string>lumireel</string>
   <key>CFBundleIdentifier</key><string>com.osdodo.lumireel</string>
   <key>CFBundleExecutable</key><string>lumireel</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -49,7 +49,7 @@ cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 
 rm -f "$dmg"
-hdiutil create -quiet -volname LumiReel -srcfolder "$stage" -format UDZO -ov "$dmg"
+hdiutil create -quiet -volname lumireel -srcfolder "$stage" -format UDZO -ov "$dmg"
 
 echo "Built $app ($version)"
 echo "Built $dmg"
