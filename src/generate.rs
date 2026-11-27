@@ -614,7 +614,7 @@ mod tests {
             speech: service("tts"),
             image: service(""),
             video: service(""),
-            accounts: Default::default(),
+            spare: Vec::new(),
         };
         let dir = std::env::temp_dir().join(format!("lumireel-generate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);

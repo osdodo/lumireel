@@ -2,31 +2,34 @@
 //! speech, image and video generation. Every edit takes effect at once: the form emits
 //! [`SettingsChanged`] and the app applies and saves it.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    AxisExt as _, IconName, Sizable as _,
-    button::Button,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
     group_box::GroupBoxVariant,
-    input::{Input, InputEvent, InputState},
+    h_flex,
+    input::{Input, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+    switch::Switch,
+    tag::Tag,
+    v_flex,
 };
-use gpui_kit::*;
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use rust_i18n::t;
 
 use crate::{
-    config::{Account, Config, Service, Services},
+    config::{Config, Service, Services, SpareService},
     i18n, library,
+    ui::dialog_footer,
 };
 
 pub struct SettingsForm {
     locale: SharedString,
     library_dir: PathBuf,
-    speech: ServiceInputs,
-    image: ServiceInputs,
-    video: ServiceInputs,
-    /// Each provider's URL and key as last filled in, so a switch restores them.
-    accounts: BTreeMap<String, Account>,
+    services: Services,
 }
 
 /// Something in the form changed; read it back with [`SettingsForm::locale`] and
@@ -35,184 +38,25 @@ pub struct SettingsChanged;
 
 impl EventEmitter<SettingsChanged> for SettingsForm {}
 
-/// One service's inputs, kept outside the settings state so the app can read them.
-struct ServiceInputs {
-    /// `speech`, `image` or `video`: picks the providers offered.
-    kind: &'static str,
-    provider: SharedString,
-    /// The provider this replaced: on the next render its URL and key are put away and the
-    /// new provider's filled in.
-    switched_from: Option<SharedString>,
-    url: Entity<InputState>,
-    key: Entity<InputState>,
-    model: Entity<InputState>,
+/// Where a listed service lives in [`Services`].
+#[derive(Clone, Copy)]
+enum Slot {
+    Active,
+    Spare(usize),
 }
 
-impl ServiceInputs {
-    fn new(
-        window: &mut Window,
-        cx: &mut Context<SettingsForm>,
-        kind: &'static str,
-        service: &Service,
-    ) -> Self {
-        let key_placeholder = t!("settings.key_placeholder").to_string();
-        Self {
-            kind,
-            provider: service.provider().to_string().into(),
-            switched_from: None,
-            url: field(window, cx, &service.url, "", false),
-            key: field(window, cx, &service.api_key, &key_placeholder, true),
-            model: field(window, cx, &service.model, "", false),
-        }
-    }
-
-    /// The picked provider's example URL and model.
-    fn defaults(&self) -> (&'static str, &'static str) {
-        PROVIDERS
-            .iter()
-            .find(|(kind, id, _, _)| *kind == self.kind && *id == self.provider.as_ref())
-            .map_or(("", ""), |(_, _, url, model)| (*url, *model))
-    }
-
-    fn account(&self, cx: &App) -> Account {
-        let service = self.service(cx);
-        Account {
-            url: service.url,
-            api_key: service.api_key,
-        }
-    }
-
-    fn service(&self, cx: &App) -> Service {
-        let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
-        Service {
-            provider: self.provider.to_string(),
-            url: value(&self.url),
-            api_key: value(&self.key),
-            model: value(&self.model),
-        }
-    }
-
-    fn group(&self, title: String, form: Entity<SettingsForm>) -> SettingGroup {
-        let kind = self.kind;
-        let providers = PROVIDERS
-            .iter()
-            .filter(|(k, _, _, _)| *k == kind)
-            .map(|(_, id, _, _)| {
-                let id = SharedString::from(*id);
-                let label = t!(format!("settings.provider_{id}")).to_string();
-                (id, SharedString::from(label))
-            })
-            .collect();
-        let provider = SettingField::dropdown(
-            providers,
-            {
-                let form = form.clone();
-                move |cx: &App| form.read(cx).inputs(kind).provider.clone()
-            },
-            move |provider, cx: &mut App| {
-                form.update(cx, |form, cx| {
-                    let inputs = form.inputs_mut(kind);
-                    if inputs.provider != provider {
-                        let old = std::mem::replace(&mut inputs.provider, provider);
-                        inputs.switched_from.get_or_insert(old);
-                        cx.emit(SettingsChanged);
-                        cx.notify();
-                    }
-                })
-            },
-        );
-        let (url, model) = self.defaults();
-        SettingGroup::new()
-            .title(title)
-            .item(SettingItem::new(
-                t!("settings.provider").to_string(),
-                provider,
-            ))
-            .item(SettingItem::new(
-                t!("settings.url").to_string(),
-                input_field(self.url.clone(), false, Some(url.into())),
-            ))
-            .item(SettingItem::new(
-                t!("settings.key").to_string(),
-                input_field(self.key.clone(), true, None),
-            ))
-            .item(SettingItem::new(
-                t!("settings.model").to_string(),
-                input_field(self.model.clone(), false, Some(model.into())),
-            ))
-    }
-}
+const KINDS: [(&str, Lucide); 3] = [
+    ("speech", Lucide::AudioLines),
+    ("image", Lucide::Image),
+    ("video", Lucide::Video),
+];
 
 impl SettingsForm {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, config: &Config) -> Self {
-        let services = &config.services;
-        let mut accounts = services.accounts.clone();
-        for service in [&services.speech, &services.image, &services.video] {
-            remember(
-                &mut accounts,
-                service.provider(),
-                &service.url,
-                &service.api_key,
-            );
-        }
+    pub fn new(_: &mut Window, _: &mut Context<Self>, config: &Config) -> Self {
         Self {
             locale: i18n::current().into(),
             library_dir: config.library_dir.clone(),
-            speech: ServiceInputs::new(window, cx, "speech", &services.speech),
-            image: ServiceInputs::new(window, cx, "image", &services.image),
-            video: ServiceInputs::new(window, cx, "video", &services.video),
-            accounts,
-        }
-    }
-
-    /// After a provider switch: put the old provider's URL and key away, then fill in the new
-    /// one's, from another service using it now, else as last saved, else its default URL.
-    fn apply_switches(&mut self, window: &mut Window, cx: &mut App) {
-        for kind in ["speech", "image", "video"] {
-            let Some(old) = self.inputs_mut(kind).switched_from.take() else {
-                continue;
-            };
-            let current = self.inputs(kind).account(cx);
-            remember(&mut self.accounts, &old, &current.url, &current.api_key);
-            let inputs = self.inputs(kind);
-            let provider = inputs.provider.clone();
-            let (default_url, model) = inputs.defaults();
-            let live = ["speech", "image", "video"]
-                .into_iter()
-                .filter(|other| *other != kind)
-                .map(|other| self.inputs(other))
-                .find(|other| other.provider == provider)
-                .map(|other| other.account(cx));
-            let account = live
-                .or_else(|| self.accounts.get(provider.as_ref()).cloned())
-                .unwrap_or_else(|| Account {
-                    url: default_url.into(),
-                    api_key: String::new(),
-                });
-            let inputs = self.inputs(kind);
-            for (input, value) in [
-                (&inputs.url, account.url.as_str()),
-                (&inputs.key, account.api_key.as_str()),
-                (&inputs.model, model),
-            ] {
-                input.update(cx, |input, cx| input.set_value(value, window, cx));
-            }
-        }
-    }
-
-    fn inputs(&self, kind: &str) -> &ServiceInputs {
-        match kind {
-            "speech" => &self.speech,
-            "image" => &self.image,
-            _ => &self.video,
-        }
-    }
-
-    fn inputs_mut(&mut self, kind: &str) -> &mut ServiceInputs {
-        match kind {
-            "speech" => &mut self.speech,
-            "image" => &mut self.image,
-            _ => &mut self.video,
+            services: config.services.clone(),
         }
     }
 
@@ -222,23 +66,42 @@ impl SettingsForm {
     }
 
     /// The services the dialog holds, ready to save.
-    pub fn services(&self, cx: &App) -> Services {
-        let mut accounts = self.accounts.clone();
-        for inputs in [&self.speech, &self.image, &self.video] {
-            let account = inputs.account(cx);
-            remember(
-                &mut accounts,
-                &inputs.provider,
-                &account.url,
-                &account.api_key,
-            );
-        }
-        Services {
-            speech: self.speech.service(cx),
-            image: self.image.service(cx),
-            video: self.video.service(cx),
-            accounts,
-        }
+    pub fn services(&self, _: &App) -> Services {
+        self.services.clone()
+    }
+
+    fn change(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Services)) {
+        edit(&mut self.services);
+        cx.emit(SettingsChanged);
+        cx.notify();
+    }
+
+    /// `kind`'s services, the one in use first.
+    fn listed(&self, kind: &str) -> Vec<(Slot, Service)> {
+        let active = self.services.active(kind);
+        let spares = self.services.spare.iter().enumerate();
+        (!active.is_empty())
+            .then(|| (Slot::Active, active.clone()))
+            .into_iter()
+            .chain(
+                spares
+                    .filter(|(_, spare)| spare.kind == kind)
+                    .map(|(i, spare)| (Slot::Spare(i), spare.service.clone())),
+            )
+            .collect()
+    }
+
+    /// Store an edited service; a new one is put in use when nothing of its kind is.
+    fn save(&mut self, kind: &str, slot: Option<Slot>, service: Service, cx: &mut Context<Self>) {
+        self.change(cx, |services| match slot {
+            Some(Slot::Active) => *services.active_mut(kind) = service,
+            Some(Slot::Spare(i)) => services.spare[i].service = service,
+            None if services.active(kind).is_empty() => *services.active_mut(kind) = service,
+            None => services.spare.push(SpareService {
+                kind: kind.to_string(),
+                service,
+            }),
+        });
     }
 
     fn general_page(&self, cx: &mut Context<Self>) -> SettingPage {
@@ -273,19 +136,15 @@ impl SettingsForm {
         SettingPage::new(t!("settings.general").to_string())
             .icon(IconName::Settings)
             .resettable(false)
+            // One untitled group: titled groups would grow a sub-tree under the page in the sidebar.
             .group(
                 SettingGroup::new()
-                    .title(t!("settings.interface").to_string())
                     .item(
                         SettingItem::new(t!("settings.language").to_string(), language)
                             .description(t!("settings.language_hint").to_string()),
-                    ),
-            )
-            .group(
-                SettingGroup::new()
-                    .title(t!("settings.library").to_string())
+                    )
                     .item(
-                        SettingItem::new(t!("settings.library_location").to_string(), reveal)
+                        SettingItem::new(t!("settings.library").to_string(), reveal)
                             .description(self.library_dir.display().to_string()),
                     ),
             )
@@ -293,19 +152,398 @@ impl SettingsForm {
 
     fn services_page(&self, cx: &mut Context<Self>) -> SettingPage {
         let form = cx.entity();
+        let groups = KINDS.map(|(kind, icon)| {
+            let listed = self.listed(kind);
+            let count = listed.len();
+            let header = SettingItem::render({
+                let form = form.clone();
+                move |_, _, cx| {
+                    let form = form.clone();
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            Icon::new(icon)
+                                .small()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .font_semibold()
+                                .child(t!(format!("settings.{kind}")).to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(count.to_string()),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new(SharedString::from(format!("add-{kind}")))
+                                .small()
+                                .outline()
+                                .icon(Lucide::Plus)
+                                .label(t!("settings.add").to_string())
+                                .on_click(move |_, window, cx| {
+                                    open_editor(
+                                        form.clone(),
+                                        kind,
+                                        None,
+                                        Service::default(),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                }
+            });
+            let cards = listed.into_iter().map(|(slot, service)| {
+                let form = form.clone();
+                SettingItem::render(move |_, _, cx| {
+                    service_card(&form, kind, icon, slot, &service, cx)
+                })
+            });
+            let group = SettingGroup::new()
+                .variant(GroupBoxVariant::Normal)
+                .item(header);
+            if count == 0 {
+                group.item(SettingItem::render(|_, _, cx| {
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("settings.none").to_string())
+                }))
+            } else {
+                group.items(cards)
+            }
+        });
         SettingPage::new(t!("settings.services").to_string())
-            .icon(gpui_kit::assets::IconName::Sparkles)
+            .icon(Lucide::Sparkles)
             .description(t!("settings.hint").to_string())
             .resettable(false)
-            .group(
-                self.speech
-                    .group(t!("settings.speech").to_string(), form.clone()),
-            )
-            .group(
-                self.image
-                    .group(t!("settings.image").to_string(), form.clone()),
-            )
-            .group(self.video.group(t!("settings.video").to_string(), form))
+            .groups(groups)
+    }
+}
+
+/// A service at a glance, with its on switch, edit and delete.
+fn service_card(
+    form: &Entity<SettingsForm>,
+    kind: &'static str,
+    icon: Lucide,
+    slot: Slot,
+    service: &Service,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let active = matches!(slot, Slot::Active);
+    let id = match slot {
+        Slot::Active => format!("{kind}-active"),
+        Slot::Spare(i) => format!("spare-{i}"),
+    };
+    let provider = t!(format!("settings.provider_{}", service.provider())).to_string();
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let on_toggle = {
+        let form = form.clone();
+        move |_: &bool, _: &mut Window, cx: &mut App| {
+            form.update(cx, |form, cx| {
+                form.change(cx, |services| match slot {
+                    Slot::Active => services.deactivate(kind),
+                    Slot::Spare(i) => services.activate(i),
+                })
+            })
+        }
+    };
+    let on_edit = {
+        let form = form.clone();
+        let service = service.clone();
+        move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            open_editor(form.clone(), kind, Some(slot), service.clone(), window, cx)
+        }
+    };
+    let on_delete = {
+        let form = form.clone();
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            form.update(cx, |form, cx| {
+                form.change(cx, |services| match slot {
+                    Slot::Active => *services.active_mut(kind) = Service::default(),
+                    Slot::Spare(i) => {
+                        services.spare.remove(i);
+                    }
+                })
+            })
+        }
+    };
+    h_flex()
+        .w_full()
+        .items_start()
+        .gap_3()
+        .p_4()
+        .rounded(theme.radius_lg)
+        .border_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .flex_none()
+                .size_9()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(theme.radius)
+                .bg(theme.muted)
+                .child(Icon::new(icon).small()),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_base()
+                                .font_semibold()
+                                .child(service.model.clone()),
+                        )
+                        .child(Tag::secondary().small().child(provider))
+                        .when(active, |this| {
+                            this.child(
+                                Tag::success()
+                                    .outline()
+                                    .small()
+                                    .child(t!("settings.in_use").to_string()),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .font_family(theme.mono_font_family.clone())
+                        .truncate()
+                        .child(service.url.clone()),
+                ),
+        )
+        .child(
+            h_flex()
+                .flex_none()
+                .gap_2()
+                .items_center()
+                .child(
+                    Switch::new(SharedString::from(format!("{id}-on")))
+                        .checked(active)
+                        .tooltip(t!("settings.in_use").to_string())
+                        .on_click(on_toggle),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id}-edit")))
+                        .small()
+                        .ghost()
+                        .icon(Lucide::Pencil)
+                        .tooltip(t!("settings.edit").to_string())
+                        .on_click(on_edit),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id}-delete")))
+                        .small()
+                        .ghost()
+                        .icon(Lucide::Trash)
+                        .tooltip(t!("settings.delete").to_string())
+                        .on_click(on_delete),
+                ),
+        )
+}
+
+/// The add/edit form, shown in its own dialog over the settings.
+struct ServiceEditor {
+    kind: &'static str,
+    provider: SharedString,
+    url: Entity<InputState>,
+    key: Entity<InputState>,
+    model: Entity<InputState>,
+}
+
+impl ServiceEditor {
+    fn new(
+        kind: &'static str,
+        service: &Service,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut input = |value: &str, secret: bool, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(value.to_string())
+                    .masked(secret)
+            })
+        };
+        let mut editor = Self {
+            kind,
+            provider: service.provider().to_string().into(),
+            url: input(&service.url, false, cx),
+            key: input(&service.api_key, true, cx),
+            model: input(&service.model, false, cx),
+        };
+        if !PROVIDERS
+            .iter()
+            .any(|(k, id, _, _)| *k == kind && *id == editor.provider.as_ref())
+        {
+            editor.provider = "openai".into();
+        }
+        editor.key.update(cx, |key, cx| {
+            key.set_placeholder(t!("settings.key_placeholder").to_string(), window, cx)
+        });
+        editor.sync_placeholders(window, cx);
+        editor
+    }
+
+    /// The picked provider's example URL and model.
+    fn defaults(&self) -> (&'static str, &'static str) {
+        defaults(self.kind, &self.provider)
+    }
+
+    fn sync_placeholders(&self, window: &mut Window, cx: &mut App) {
+        let (url, model) = self.defaults();
+        self.url
+            .update(cx, |input, cx| input.set_placeholder(url, window, cx));
+        self.model
+            .update(cx, |input, cx| input.set_placeholder(model, window, cx));
+    }
+
+    /// The service as filled in; blank URL and model take the provider's examples.
+    fn service(&self, cx: &App) -> Service {
+        let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
+        let (url, model) = self.defaults();
+        let or = |value: String, default: &str| {
+            if value.is_empty() {
+                default.to_string()
+            } else {
+                value
+            }
+        };
+        Service {
+            provider: self.provider.to_string(),
+            url: or(value(&self.url), url),
+            api_key: value(&self.key),
+            model: or(value(&self.model), model),
+        }
+    }
+}
+
+impl Render for ServiceEditor {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.entity();
+        let kind = self.kind;
+        let current = self.provider.clone();
+        let label = t!(format!("settings.provider_{current}")).to_string();
+        let provider = Button::new("provider")
+            .w_full()
+            .outline()
+            .label(label)
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                PROVIDERS
+                    .iter()
+                    .filter(|(k, ..)| *k == kind)
+                    .fold(menu, |menu, (_, id, _, _)| {
+                        let this = this.clone();
+                        menu.item(
+                            PopupMenuItem::new(t!(format!("settings.provider_{id}")).to_string())
+                                .checked(current.as_ref() == *id)
+                                .on_click(move |_, window, cx| {
+                                    this.update(cx, |editor, cx| {
+                                        editor.provider = (*id).into();
+                                        editor.sync_placeholders(window, cx);
+                                        cx.notify();
+                                    })
+                                }),
+                        )
+                    })
+            });
+        let row = |label: SharedString, field: AnyElement| {
+            v_flex()
+                .gap_1()
+                .child(div().text_sm().child(label))
+                .child(field)
+        };
+        v_flex()
+            .gap_3()
+            .child(row(
+                t!("settings.provider").to_string().into(),
+                provider.into_any_element(),
+            ))
+            .child(row(
+                t!("settings.url").to_string().into(),
+                Input::new(&self.url).into_any_element(),
+            ))
+            .child(row(
+                t!("settings.key").to_string().into(),
+                Input::new(&self.key).mask_toggle().into_any_element(),
+            ))
+            .child(row(
+                t!("settings.model").to_string().into(),
+                Input::new(&self.model).into_any_element(),
+            ))
+    }
+}
+
+/// Add (`slot` is `None`) or edit a service in a dialog; saving writes it back to `form`.
+fn open_editor(
+    form: Entity<SettingsForm>,
+    kind: &'static str,
+    slot: Option<Slot>,
+    service: Service,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let editor = cx.new(|cx| ServiceEditor::new(kind, &service, window, cx));
+    let title = t!(if slot.is_some() {
+        "settings.edit"
+    } else {
+        "settings.add"
+    })
+    .to_string();
+    window.open_dialog(cx, move |dialog, _, _| {
+        let editor = editor.clone();
+        let form = form.clone();
+        dialog
+            .title(title.clone())
+            .w(px(460.))
+            .child(editor.clone())
+            .footer(dialog_footer(
+                Button::new("save-service")
+                    .primary()
+                    .label(t!("common.save").to_string()),
+            ))
+            .on_ok(move |_, _, cx| {
+                let service = editor.read(cx).service(cx);
+                form.update(cx, |form, cx| form.save(kind, slot, service, cx));
+                true
+            })
+    });
+}
+
+/// `provider`'s example URL and model for `kind`.
+fn defaults(kind: &str, provider: &str) -> (&'static str, &'static str) {
+    PROVIDERS
+        .iter()
+        .find(|(k, id, _, _)| *k == kind && *id == provider)
+        .map_or(("", ""), |(_, _, url, model)| (*url, *model))
+}
+
+impl Render for SettingsForm {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let general = self.general_page(cx);
+        div().h(px(480.)).child(
+            Settings::new("settings")
+                .sidebar_width(px(180.))
+                .with_group_variant(GroupBoxVariant::Outline)
+                .page(general)
+                .page(self.services_page(cx)),
+        )
     }
 }
 
@@ -363,80 +601,3 @@ const PROVIDERS: &[(&str, &str, &str, &str)] = &[
         "MiniMax-Hailuo-2.3",
     ),
 ];
-
-/// Keep a provider's URL and key; a blank one is not worth keeping.
-fn remember(accounts: &mut BTreeMap<String, Account>, provider: &str, url: &str, key: &str) {
-    if !key.is_empty() {
-        accounts.insert(
-            provider.to_string(),
-            Account {
-                url: url.to_string(),
-                api_key: key.to_string(),
-            },
-        );
-    }
-}
-
-/// A text field seeded with `value`; secrets start masked. Each edit reports a change.
-fn field(
-    window: &mut Window,
-    cx: &mut Context<SettingsForm>,
-    value: &str,
-    placeholder: &str,
-    secret: bool,
-) -> Entity<InputState> {
-    let state = cx.new(|cx| {
-        InputState::new(window, cx)
-            .placeholder(placeholder.to_string())
-            .default_value(value.to_string())
-            .masked(secret)
-    });
-    cx.subscribe(&state, |_, _, event: &InputEvent, cx| {
-        if matches!(event, InputEvent::Change) {
-            cx.emit(SettingsChanged);
-        }
-    })
-    .detach();
-    state
-}
-
-/// An input as a settings row field. `placeholder` follows the picked provider.
-fn input_field(
-    state: Entity<InputState>,
-    secret: bool,
-    placeholder: Option<SharedString>,
-) -> SettingField<SharedString> {
-    SettingField::render(move |options, window, cx| {
-        if let Some(placeholder) = &placeholder
-            && state.read(cx).presentation().placeholder() != placeholder
-        {
-            state.update(cx, |input, cx| {
-                input.set_placeholder(placeholder.clone(), window, cx)
-            });
-        }
-        let input = Input::new(&state)
-            .small()
-            .bordered(false)
-            .focus_bordered(false);
-        let input = if secret { input.mask_toggle() } else { input };
-        if options.layout().is_horizontal() {
-            input.w(px(300.))
-        } else {
-            input.w_full()
-        }
-    })
-}
-
-impl Render for SettingsForm {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.apply_switches(window, cx);
-        let general = self.general_page(cx);
-        div().h(px(480.)).child(
-            Settings::new("settings")
-                .sidebar_width(px(180.))
-                .with_group_variant(GroupBoxVariant::Outline)
-                .page(general)
-                .page(self.services_page(cx)),
-        )
-    }
-}
