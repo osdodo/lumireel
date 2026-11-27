@@ -152,10 +152,15 @@ impl<'a> Api<'a> {
         let request = if self.service.provider() == "doubao" {
             // Doubao speech: the key and the model (its "resource id") go in their own headers.
             let id = format!("lumireel-{}", rand::random::<u64>());
-            request
+            let request = request
                 .header("X-Api-Key", key)
-                .header("X-Api-Resource-Id", self.service.model.trim())
-                .header("X-Api-Request-Id", id)
+                .header("X-Api-Request-Id", id);
+            // Audio generation (/tts/create) takes the model in the body instead.
+            if path == "/tts/create" {
+                request
+            } else {
+                request.header("X-Api-Resource-Id", self.service.model.trim())
+            }
         } else {
             request.header("Authorization", format!("Bearer {key}"))
         };
@@ -239,11 +244,42 @@ impl<'a> Api<'a> {
 
     /// Doubao TTS: answers JSON objects one after another, each with a base64 piece of audio.
     fn doubao_speech(&self, request: &GenerateRequest) -> Result<Vec<u8>> {
+        let speaker = request
+            .voice
+            .as_deref()
+            .unwrap_or("zh_female_vv_uranus_bigtts");
+        if self.service.model.trim().starts_with("seed-audio") {
+            // Audio generation model: one JSON answer with the whole clip in base64.
+            let body = self.with_model(json!({
+                "text_prompt": request.prompt,
+                "references": [{ "speaker": speaker }],
+                "audio_config": { "format": "mp3", "sample_rate": 44100 },
+            }));
+            let answer = self.post_json("/tts/create", &body)?;
+            if let Some(code) = answer["code"]
+                .as_i64()
+                .filter(|c| ![0, 20000000].contains(c))
+            {
+                bail!(
+                    "the speech service answered error {code}: {}",
+                    answer["message"].as_str().unwrap_or_default()
+                );
+            }
+            let Some(data) = answer["audio"].as_str().filter(|d| !d.is_empty()) else {
+                bail!(
+                    "the speech service answered without audio: {}",
+                    snippet(&answer.to_string())
+                )
+            };
+            return base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .context("the speech service sent bad base64");
+        }
         let body = json!({
             "user": { "uid": "lumireel" },
             "req_params": {
                 "text": request.prompt,
-                "speaker": request.voice.as_deref().unwrap_or("zh_female_vv_uranus_bigtts"),
+                "speaker": speaker,
                 "audio_params": { "format": "mp3", "sample_rate": 24000 },
             },
         });
@@ -540,6 +576,15 @@ mod tests {
                         let url = format!("http://127.0.0.1:{port}/file/qwen.wav");
                         Response::from_string(json!({"output": {"audio": {"url": url}}}).to_string())
                     }
+                    (_, "/doubao/tts/create") => {
+                        assert_eq!(resource, None);
+                        let body: Value = serde_json::from_str(&body).unwrap();
+                        assert_eq!(body["model"], "seed-audio-1.0");
+                        assert_eq!(body["text_prompt"], "hello");
+                        assert_eq!(body["references"][0]["speaker"], "zh_female_vv_uranus_bigtts");
+                        let audio = base64::engine::general_purpose::STANDARD.encode(b"ID3seed");
+                        Response::from_string(json!({"code": 0, "audio": audio}).to_string())
+                    }
                     (_, "/doubao/tts/unidirectional") => {
                         assert_eq!(resource.as_deref(), Some("seed-tts-2.0"));
                         let body: Value = serde_json::from_str(&body).unwrap();
@@ -654,6 +699,9 @@ mod tests {
         let speech = generate(&doubao, &request("speech", None), &dir).unwrap();
         assert_eq!(speech.extension().unwrap(), "mp3");
         assert_eq!(fs::read(&speech).unwrap(), b"ID3dou");
+        doubao.speech.model = "seed-audio-1.0".into();
+        let speech = generate(&doubao, &request("speech", Some("s.mp3")), &dir).unwrap();
+        assert_eq!(fs::read(&speech).unwrap(), b"ID3seed");
 
         let mut other = services.clone();
         for service in [&mut other.image, &mut other.video] {
