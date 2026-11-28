@@ -30,9 +30,8 @@ pub struct SettingsForm {
     services: Services,
     /// The add/edit form, shown instead of the service list while open.
     editor: Option<Entity<ServiceEditor>>,
-    /// Window x of the service groups' right edge and of the title row's left, from the last
-    /// frame: the page header cannot right-align a title suffix, so the add button is laid out
-    /// from these.
+    /// Last frame's window x of the groups' right edge and the title row's left: the add button is
+    /// laid out from them.
     groups_right: Rc<Cell<Pixels>>,
     title_left: Rc<Cell<Pixels>>,
 }
@@ -222,9 +221,8 @@ impl SettingsForm {
             .map(|(kind, _)| *kind)
             .find(|kind| self.services.active(kind).is_empty())
             .unwrap_or("video");
-        // In the page header, level with the title and right-aligned with the cards below.
-        // The suffix sits in the title's own row, which is only as wide as the title, so it is
-        // stretched from there to the groups' right edge, measured on the last frame.
+        // The header cannot right-align a title suffix, and the suffix's row is only as wide as the
+        // title: stretch it to the groups' right edge.
         let (right, left) = (self.groups_right.clone(), self.title_left.clone());
         let width = right.get() - left.get();
         page.description(t!("settings.hint").to_string())
@@ -415,7 +413,7 @@ fn service_card(
 /// The add/edit form, shown in the services page in place of the list.
 struct ServiceEditor {
     form: WeakEntity<SettingsForm>,
-    /// Where the edited service is; `None` adds one.
+    /// `None` adds a service.
     slot: Option<Slot>,
     kind: &'static str,
     provider: SharedString,
@@ -508,7 +506,6 @@ impl ServiceEditor {
             .ok();
     }
 
-    /// One provider to pick: its name and what it is for.
     fn card(&self, kind: &'static str, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let on = self.kind == kind && self.provider.as_ref() == id;
@@ -559,7 +556,6 @@ impl ServiceEditor {
     }
 }
 
-/// What to know about a provider's URL or model beyond the example.
 fn provider_note(provider: &str) -> Option<String> {
     match provider {
         "h3" => Some(t!("settings.note_h3").to_string()),
@@ -699,7 +695,7 @@ impl Render for ServiceEditor {
     }
 }
 
-/// Add (`slot` is `None`) or edit a service: the services page shows the form until it closes.
+/// Add (`slot` is `None`) or edit a service in the form.
 fn open_editor(
     form: Entity<SettingsForm>,
     kind: &'static str,

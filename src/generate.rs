@@ -367,8 +367,7 @@ impl<'a> Api<'a> {
         )
     }
 
-    /// MiniMax-H3 as relayed by Tokvi: a `content` list of the text and the first frame, at 768P
-    /// and 4–15 s; the finished clip is at `task.content.url`.
+    /// MiniMax-H3 through a relay's task API: 768P, 4–15 s.
     fn h3_video(&self, request: &GenerateRequest, first: Option<&[u8]>) -> Result<Vec<u8>> {
         let mut content = vec![json!({ "type": "text", "text": request.prompt })];
         if let Some(image) = first {
@@ -408,7 +407,7 @@ impl<'a> Api<'a> {
         bytes(self.get(&download_url(&job["task"]["content"]["url"])?)?)
     }
 
-    /// Start the job, wait for it, then download the clip. `first` is the first frame, if any.
+    /// Start the job, wait for it, then download the clip.
     fn video(&self, request: &GenerateRequest, first: Option<&[u8]>) -> Result<Vec<u8>> {
         let provider = self.service.provider();
         if provider == "h3" {
@@ -931,15 +930,6 @@ mod tests {
             "ark"
         );
         assert_eq!(service("https://api.minimaxi.com/v1").provider(), "minimax");
-        let tokvi = Service {
-            provider: "minimax".into(),
-            ..service("https://tokvi.net/v1")
-        };
-        assert_eq!(
-            tokvi.provider(),
-            "h3",
-            "Tokvi relays MiniMax-H3 with its own API"
-        );
         assert_eq!(service("https://api.openai.com/v1").provider(), "openai");
         assert_eq!(
             service("https://openspeech.bytedance.com/api/v3").provider(),

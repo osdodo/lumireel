@@ -1,12 +1,7 @@
-//! The canvas that shows and edits a project's workflow (see `workflow`): nodes wired freely on
-//! an endless surface. Drag the background (or scroll) to pan, a node's title bar to move it; drag from a
-//! node's output dot and let go over another node to wire them; the × on a wire cuts it. Files
-//! dropped on the canvas become nodes; dropped on an image / video / audio node they replace its
-//! content.
-//!
-//! ⌘/Ctrl + scroll (or the toolbar) zooms around the cursor; the whole card scales, text too.
-//! Shift/⌘-click a title to add it to the selection, Shift-drag the canvas to box-select; dragging
-//! a selected node moves them all. The minimap in the corner shows everything and jumps there.
+//! The canvas that shows and edits a project's workflow (see `workflow`). Drag the background or
+//! scroll to pan, a title bar to move a node, an output dot onto another node to wire them; × cuts
+//! a wire. Dropped files become nodes, or replace the content of the node they land on. ⌘/Ctrl +
+//! scroll zooms the whole card, text too; Shift/⌘-click or Shift-drag selects.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -36,8 +31,7 @@ use serde_json::{Value, json};
 const NODE_W: f32 = 300.;
 const HEAD_H: f32 = 34.;
 const DOT: f32 = 12.;
-/// Height of a node's preview box when there is no picture to size it by; the ports sit at the
-/// middle of the box.
+/// Media box height when there is no picture to size it; the ports sit at its middle.
 const MEDIA_H: f32 = 170.;
 const GRID: f32 = 24.;
 /// Cards are about this tall; used where the real height is not known (box-select, minimap).
@@ -130,12 +124,11 @@ fn extent(nodes: &[Node]) -> Option<(f32, f32, f32, f32)> {
     })
 }
 
-/// What a node's output looks like on the canvas.
 #[derive(Clone)]
 struct Picture {
     /// The file itself for images, the first frame for videos.
     path: Option<PathBuf>,
-    /// The picture's height / width, when its header could be read.
+    /// Height / width, if the header could be read.
     aspect: Option<f32>,
 }
 
@@ -168,11 +161,10 @@ pub struct CanvasPanel {
     pictures: HashMap<String, Picture>,
     /// Jobs on their way, in any project: a run outlives switching projects.
     running: HashSet<(PathBuf, i64)>,
-    /// Why a node's last run failed, with the hash it was run for: the run-all chain does not
-    /// retry it until something changes.
+    /// Why a node's last run failed, with its input hash: Run all does not retry it until that
+    /// changes.
     errors: HashMap<(PathBuf, i64), (String, String)>,
-    /// Projects on 「Run all」: keep starting nodes as their upstream finishes, whichever project
-    /// is on screen.
+    /// Projects on Run all, whether on screen or not.
     auto: HashSet<PathBuf>,
     services: Services,
     offset: Point<Pixels>,
@@ -182,7 +174,6 @@ pub struct CanvasPanel {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     drag: Option<Drag>,
     texts: HashMap<i64, Entity<TextareaState>>,
-    /// The node whose title is being edited (double-click on the title).
     renaming: Option<(i64, Entity<InputState>)>,
     _subs: Vec<Subscription>,
 }
@@ -228,7 +219,6 @@ impl CanvasPanel {
         self.services = services;
     }
 
-    /// Show the workflow of the project at `path` (or none).
     pub fn load(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
         if self.project.as_deref() == path {
             return;
@@ -286,7 +276,7 @@ impl CanvasPanel {
         }
     }
 
-    /// Save the workflow after a change, show it, and say what went wrong if anything did.
+    /// Saves and shows the workflow after a change; errors become notifications.
     fn done(&mut self, r: anyhow::Result<()>, window: &mut Window, cx: &mut Context<Self>) {
         if let Err(e) = r {
             window.push_notification(format!("{e:#}"), cx);
@@ -417,7 +407,6 @@ impl CanvasPanel {
         );
     }
 
-    /// Asks before deleting the given nodes.
     fn confirm_delete(&mut self, ids: Vec<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let title = match ids.as_slice() {
             [] => return,
@@ -506,7 +495,6 @@ impl CanvasPanel {
         .detach();
     }
 
-    /// Saves a merge node's cut wherever the user picks.
     fn export_cut(
         &mut self,
         file: PathBuf,
@@ -569,7 +557,6 @@ impl CanvasPanel {
         cx.notify();
     }
 
-    /// A node's size and (for video) length menus.
     fn params_row(&self, n: &Node, this: WeakEntity<Self>) -> Div {
         let id = n.id;
         let auto = t!("canvas.auto").to_string();
@@ -653,7 +640,6 @@ impl CanvasPanel {
         }
     }
 
-    /// Saves the prompt typed in the editor, to the node and its small box.
     fn save_prompt(&mut self, id: i64, text: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(small) = self.texts.get(&id).cloned() {
             small.update(cx, |s, cx| s.set_value(text.clone(), window, cx));
@@ -661,9 +647,8 @@ impl CanvasPanel {
         self.edit(id, |n| n.text = text, window, cx);
     }
 
-    /// The prompt in a big window. Starts from what is in the box (typed or not); Save writes it
-    /// back to the node and the box; closing the window (× / Esc) leaves both as they were.
-    /// Image / video nodes also get their settings and Generate here (it saves first).
+    /// The prompt in a big window: Save writes it back, closing discards it. Image / video nodes
+    /// get their settings and Generate here too.
     fn open_editor(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(n) = self.workflow.node(id) else {
             return;
@@ -758,7 +743,6 @@ impl CanvasPanel {
         });
     }
 
-    /// A wire dropped on node `to`.
     fn wire(&mut self, from: i64, to: i64, window: &mut Window, cx: &mut Context<Self>) {
         let r = self.workflow.connect(from, to);
         self.done(r, window, cx);
@@ -774,7 +758,6 @@ impl CanvasPanel {
         }
     }
 
-    /// The node's Generate button.
     fn generate(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_text(id, cx);
         self.done(Ok(()), window, cx);
@@ -798,9 +781,8 @@ impl CanvasPanel {
         cx.notify();
     }
 
-    /// One `reel workflow` request from the agent working in the project at `dir`. The workflow on
-    /// screen is the one edited when it is that project, so the person sees each change and
-    /// nothing they do overwrites it.
+    /// A `reel workflow` request for the project at `dir`. The open project is edited on screen, so
+    /// the person sees each change and nothing they do overwrites it.
     pub fn serve(
         &mut self,
         dir: &Path,
@@ -839,7 +821,6 @@ impl CanvasPanel {
         }
     }
 
-    /// The workflow as the agent sees it, with what is generating and what failed.
     fn describe(&self, dir: &Path) -> Value {
         let mut shown = self.workflow_of(dir).describe();
         for n in shown["nodes"].as_array_mut().into_iter().flatten() {
@@ -858,8 +839,7 @@ impl CanvasPanel {
         shown
     }
 
-    /// `reel workflow run`: the listed nodes, or with none listed everything ready, and what comes
-    /// after it as upstream finishes. Answers at once; generation goes on in the background.
+    /// The listed nodes, or with none everything ready and then what follows. Answers at once.
     fn serve_run(
         &mut self,
         dir: &Path,
@@ -914,7 +894,7 @@ impl CanvasPanel {
         Ok(json!({ "started": started, "skipped": skipped }))
     }
 
-    /// The workflow of the project at `dir`: the one on screen, or the saved one.
+    /// The one on screen, or the saved one.
     fn workflow_of(&self, dir: &Path) -> Workflow {
         match &self.project {
             Some(open) if open == dir => self.workflow.clone(),
@@ -922,7 +902,7 @@ impl CanvasPanel {
         }
     }
 
-    /// Run one node's job on its own thread. Returns whether it started.
+    /// False if it is already running.
     fn start(
         &mut self,
         dir: PathBuf,
@@ -999,8 +979,7 @@ impl CanvasPanel {
         cx.notify();
     }
 
-    /// The jobs of `workflow` (the project at `dir`) that can run now and are not already on their
-    /// way or just failed with these very inputs.
+    /// Jobs that can run now, skipping those running or just failed with the same inputs.
     fn ready(&self, dir: &Path, workflow: &Workflow) -> Vec<Job> {
         let status = workflow.status();
         workflow
@@ -1025,8 +1004,7 @@ impl CanvasPanel {
         self.running.iter().filter(|(d, _)| d == dir).count()
     }
 
-    /// 「Run all」 in the project at `dir`: start everything ready; the rest follows as upstream
-    /// finishes, until nothing more can run.
+    /// Run all: start everything ready; the rest follows as upstream finishes.
     fn run_ready(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let workflow = self.workflow_of(&dir);
         for job in self.ready(&dir, &workflow) {
@@ -1081,8 +1059,7 @@ impl CanvasPanel {
         self.pictures.get(&n.out.as_ref()?.file)
     }
 
-    /// Height of a node's media box: the whole picture at the card's width (a portrait one gets
-    /// a tall box), else the fixed preview height.
+    /// The whole picture at the card's width, else the fixed preview height.
     fn media_h(&self, n: &Node) -> f32 {
         // The panel's 1px border on each side.
         self.picture(n)
@@ -1151,7 +1128,6 @@ impl CanvasPanel {
             ElementId::Name(format!("out-{id}").into()),
         )
         .right(px(-DOT / 2. * z))
-        // Press and pull a wire out.
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, e: &MouseDownEvent, _, cx| {
@@ -1172,9 +1148,7 @@ impl CanvasPanel {
             (_, NodeStatus::Waiting) => (t!("canvas.status_waiting").to_string(), muted),
             _ => (String::new(), muted),
         };
-        // An imported file is used as is: no prompt, no generating. Image / video can always be
-        // asked (a prompt may be typed in the editor); merge only makes sense with videos wired
-        // in. Some(true) = merge.
+        // An imported file is used as is. Some(true) = merge, which needs videos wired in.
         let action = match n.kind.as_str() {
             "image" | "video" if !imported || wired_in => Some(false),
             "merge" if wired_in => Some(true),
@@ -1356,7 +1330,6 @@ impl CanvasPanel {
         let body: AnyElement = match n.kind.as_str() {
             "text" => {
                 let state = self.text_state(&n, window, cx);
-                // A small inset, so the box sits inside the panel's edge instead of on it.
                 div()
                     .p_1()
                     .child(
@@ -1498,7 +1471,6 @@ impl CanvasPanel {
     }
 }
 
-/// What kind of file a node's output is.
 fn output_media(kind: &str) -> &str {
     if kind == "merge" { "video" } else { kind }
 }

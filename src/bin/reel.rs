@@ -152,8 +152,7 @@ fn run() -> Result<u8> {
     }
 }
 
-/// `reel workflow …`: one request to the app's canvas, which runs the workflow; the answer is
-/// printed as JSON.
+/// `reel workflow …`: one request to the canvas; prints the answer as JSON.
 fn workflow(args: &[String]) -> Result<u8> {
     let (url, token, project) = connection()?;
     let sub = args.first().map(String::as_str).unwrap_or("show");
@@ -216,7 +215,7 @@ fn workflow(args: &[String]) -> Result<u8> {
         }
         "import" => {
             let file = rest.first().context("workflow import needs a file")?;
-            // The app resolves paths against the project; make ours absolute from here.
+            // The app resolves relative paths against the project, not our cwd.
             body["file"] = json!(env::current_dir()?.join(file));
             match (rest.get(1).map(String::as_str), rest.get(2)) {
                 (Some("--into"), node) => body["node"] = json!(id(node, "the node to put it in")?),
@@ -242,7 +241,6 @@ fn workflow(args: &[String]) -> Result<u8> {
         return Ok(0);
     }
     println!("started: {}", answer["started"]);
-    // Until nothing is generating and no run-all is going on: then show where it ended.
     let show = json!({ "project": body["project"], "op": "show" });
     let started = std::time::Instant::now();
     loop {

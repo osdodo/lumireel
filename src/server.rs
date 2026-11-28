@@ -1961,7 +1961,6 @@ mod tests {
             std::env::temp_dir().join(format!("lumireel-workflow-ctl-{}", std::process::id()));
         fs::create_dir_all(root.join("film")).unwrap();
         let (handle, _jobs, workflow) = start(root.clone(), "tok".into()).unwrap();
-        // The app's side: answer with what was asked, or fail.
         thread::spawn(move || {
             while let Ok(request) = workflow.recv() {
                 let answer = match request.op["op"].as_str() {
