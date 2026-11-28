@@ -27,6 +27,10 @@ lumireel 是一款原生桌面应用，让你和 AI 编码智能体协作制作�
   <img src="assets/demo.gif" alt="lumireel 演示" width="880">
 </p>
 
+<p align="center">
+  <img src="assets/screenshot.jpg" alt="lumireel 工作流画布与 Agent 面板" width="880">
+</p>
+
 ## 特性
 
 - **为智能体而生的流程** —— 智能体在项目文件夹内的真实 PTY 中工作，`reel` CLI 已加入它的

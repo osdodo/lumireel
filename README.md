@@ -28,6 +28,10 @@ previews and renders it.
   <img src="assets/demo.gif" alt="lumireel demo" width="880">
 </p>
 
+<p align="center">
+  <img src="assets/screenshot.jpg" alt="lumireel workflow canvas with the agent panel" width="880">
+</p>
+
 ## Features
 
 - **Agent-native workflow** — the agent works in a real PTY inside the project folder, with the `reel`
