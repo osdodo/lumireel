@@ -21,7 +21,7 @@ pub struct Config {
 /// One generation service: whose API it speaks, where it is, how to authenticate, which model.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Service {
-    /// `openai`, `mimo`, `doubao`, `qwen`, `ark` or `minimax`; empty in configs saved before it existed.
+    /// `openai`, `mimo`, `doubao`, `qwen`, `ark`, `minimax` or `h3`; empty in configs saved before it existed.
     #[serde(default)]
     pub provider: String,
     #[serde(default)]
@@ -33,13 +33,15 @@ pub struct Service {
 }
 
 impl Service {
-    /// The provider, guessed from the URL when an older config did not save one.
+    /// The provider, guessed from the URL when an older config did not save one. Tokvi relays
+    /// MiniMax-H3 with its own API, so a MiniMax service pointed there is `h3`.
     pub fn provider(&self) -> &str {
         match self.provider.as_str() {
             "" if self.url.contains("xiaomimimo.com") => "mimo",
             "" if self.url.contains("openspeech.bytedance.com") => "doubao",
             "" if self.url.contains("dashscope") => "qwen",
             "" if self.url.contains("volces.com") || self.url.contains("byteplus") => "ark",
+            "" | "minimax" if self.url.contains("tokvi.net") => "h3",
             "" if self.url.contains("minimax") => "minimax",
             "" => "openai",
             provider => provider,

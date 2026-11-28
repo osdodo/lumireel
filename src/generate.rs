@@ -31,6 +31,9 @@ pub struct GenerateRequest {
     pub size: Option<String>,
     #[serde(default)]
     pub seconds: Option<String>,
+    /// Video only: the first frame, relative to the project (or absolute).
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 /// Video jobs run for minutes; past this the service is not going to answer.
@@ -72,7 +75,16 @@ pub fn generate(
             let ext = image_ext(&bytes);
             (bytes, ext)
         }
-        _ => (api.video(request)?, "mp4"),
+        _ => {
+            let first = match &request.image {
+                Some(image) => {
+                    let path = project_dir.join(image);
+                    Some(fs::read(&path).with_context(|| format!("reading {}", path.display()))?)
+                }
+                None => None,
+            };
+            (api.video(request, first.as_deref())?, "mp4")
+        }
     };
     let file = out_path(project_dir, request, ext);
     if let Some(parent) = file.parent() {
@@ -117,6 +129,23 @@ fn image_ext(bytes: &[u8]) -> &'static str {
     }
 }
 
+fn image_mime(ext: &str) -> &'static str {
+    match ext {
+        "jpg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
+/// An image inline, as Ark and MiniMax take a first frame.
+fn data_uri(image: &[u8]) -> String {
+    format!(
+        "data:{};base64,{}",
+        image_mime(image_ext(image)),
+        base64::engine::general_purpose::STANDARD.encode(image)
+    )
+}
+
 struct Api<'a> {
     base: String,
     service: &'a Service,
@@ -130,8 +159,14 @@ impl<'a> Api<'a> {
             .timeout_global(Some(Duration::from_secs(600)))
             .build()
             .into();
+        let base = service.url.trim().trim_end_matches('/');
+        // H3's paths start at the site root (`/v2/...`); a pasted `.../v1` is tolerated.
+        let base = match service.provider() {
+            "h3" => base.strip_suffix("/v1").unwrap_or(base),
+            _ => base,
+        };
         Self {
-            base: service.url.trim().trim_end_matches('/').to_string(),
+            base: base.to_string(),
             service,
             agent,
         }
@@ -332,18 +367,75 @@ impl<'a> Api<'a> {
         )
     }
 
-    /// Start the job, wait for it, then download the clip.
-    fn video(&self, request: &GenerateRequest) -> Result<Vec<u8>> {
+    /// MiniMax-H3 as relayed by Tokvi: a `content` list of the text and the first frame, at 768P
+    /// and 4–15 s; the finished clip is at `task.content.url`.
+    fn h3_video(&self, request: &GenerateRequest, first: Option<&[u8]>) -> Result<Vec<u8>> {
+        let mut content = vec![json!({ "type": "text", "text": request.prompt })];
+        if let Some(image) = first {
+            // No role: H3 takes an image without one as the first frame.
+            content.push(json!({ "type": "image_url", "image_url": { "url": data_uri(image) } }));
+        }
+        let seconds: u32 = match &request.seconds {
+            Some(s) => s
+                .trim()
+                .parse()
+                .with_context(|| format!("--seconds {s} is not a whole number"))?,
+            None => 5,
+        };
+        const RATIOS: &[&str] = &["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
+        let ratio = match request.size.as_deref().and_then(dimensions) {
+            Some((w, h)) if first.is_none() => {
+                let gcd = gcd(w, h);
+                let ratio = format!("{}:{}", w / gcd, h / gcd);
+                if RATIOS.contains(&ratio.as_str()) {
+                    ratio
+                } else {
+                    "adaptive".into()
+                }
+            }
+            _ => "adaptive".into(),
+        };
+        let body = self.with_model(json!({
+            "content": content,
+            "resolution": "768P",
+            "duration": seconds.clamp(4, 15),
+            "ratio": ratio,
+            "context_ir_enabled": false,
+            "aigc_watermark": false,
+        }));
+        let id = job_id(&self.post_json("/v2/video_generation", &body)?, "task_id")?;
+        let job = self.wait(&format!("{}/v2/query/video_generation/{id}", self.base))?;
+        bytes(self.get(&download_url(&job["task"]["content"]["url"])?)?)
+    }
+
+    /// Start the job, wait for it, then download the clip. `first` is the first frame, if any.
+    fn video(&self, request: &GenerateRequest, first: Option<&[u8]>) -> Result<Vec<u8>> {
         let provider = self.service.provider();
+        if provider == "h3" {
+            return self.h3_video(request, first);
+        }
         let mut body = self.with_model(match provider {
             "ark" => json!({ "content": [{ "type": "text", "text": request.prompt }] }),
             _ => json!({ "prompt": request.prompt }),
         });
+        match (provider, first) {
+            ("ark", Some(image)) => {
+                body["content"].as_array_mut().unwrap().push(
+                    json!({ "type": "image_url", "image_url": { "url": data_uri(image) }, "role": "first_frame" }),
+                );
+                // A first frame brings its own shape.
+                body["ratio"] = json!("adaptive");
+            }
+            ("minimax", Some(image)) => body["first_frame_image"] = json!(data_uri(image)),
+            _ => {}
+        }
         if let Some(size) = &request.size {
             match (provider, dimensions(size)) {
                 ("ark", Some((width, height))) => {
                     let gcd = gcd(width, height);
-                    body["ratio"] = json!(format!("{}:{}", width / gcd, height / gcd));
+                    if first.is_none() {
+                        body["ratio"] = json!(format!("{}:{}", width / gcd, height / gcd));
+                    }
                     body["resolution"] = json!(format!("{}p", width.min(height)));
                 }
                 ("minimax", Some((width, height))) => {
@@ -383,7 +475,11 @@ impl<'a> Api<'a> {
                 bytes(self.get(&download_url(&found["file"]["download_url"])?)?)
             }
             _ => {
-                let id = job_id(&self.post_json("/videos", &body)?, "id")?;
+                let answer = match first {
+                    Some(image) => self.post_form("/videos", &body, image)?,
+                    None => self.post_json("/videos", &body)?,
+                };
+                let id = job_id(&answer, "id")?;
                 self.wait(&format!("{}/videos/{id}", self.base))?;
                 bytes(self.get(&format!("{}/videos/{id}/content", self.base))?)
             }
@@ -395,12 +491,15 @@ impl<'a> Api<'a> {
         let started = Instant::now();
         loop {
             let job = self.get_json(url)?;
-            match job["status"].as_str().unwrap_or_default() {
+            // H3 nests the job under `task`.
+            let status = job["status"].as_str().or(job["task"]["status"].as_str());
+            match status.unwrap_or_default() {
                 "completed" | "succeeded" | "Success" => return Ok(job),
                 "failed" | "cancelled" | "expired" | "Fail" => bail!(
                     "the video job failed: {}",
                     job["error"]["message"]
                         .as_str()
+                        .or(job["task"]["error"]["message"].as_str())
                         .or(job["base_resp"]["status_msg"].as_str())
                         .unwrap_or("no reason given")
                 ),
@@ -418,6 +517,45 @@ impl<'a> Api<'a> {
 
     fn post_json(&self, path: &str, body: &Value) -> Result<Value> {
         minimax_ok(self.post(path, body)?.body_mut().read_json()?)
+    }
+
+    /// OpenAI `/videos` with a first frame: `body`'s fields as form fields plus `input_reference`.
+    fn post_form(&self, path: &str, body: &Value, image: &[u8]) -> Result<Value> {
+        let boundary = format!("lumireel{:016x}", rand::random::<u64>());
+        let mut form = Vec::new();
+        for (name, value) in body.as_object().into_iter().flatten() {
+            let value = value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_string);
+            form.extend(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+                    .as_bytes(),
+            );
+        }
+        let ext = image_ext(image);
+        form.extend(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"input_reference\"; filename=\"first.{ext}\"\r\nContent-Type: {}\r\n\r\n",
+                image_mime(ext)
+            )
+            .as_bytes(),
+        );
+        form.extend(image);
+        form.extend(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let response = self
+            .agent
+            .post(format!("{}{path}", self.base))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.service.api_key.trim()),
+            )
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send(&form[..])
+            .with_context(|| format!("calling {}{path}", self.base))?;
+        minimax_ok(check(response, path)?.body_mut().read_json()?)
     }
 }
 
@@ -604,6 +742,13 @@ mod tests {
                         let answer = json!({"data": {"image_base64": [jpg]}, "base_resp": {"status_code": 0}});
                         Response::from_string(answer.to_string())
                     }
+                    (_, "/ark/contents/generations/tasks") if body.contains("first_frame") => {
+                        let body: Value = serde_json::from_str(&body).unwrap();
+                        assert_eq!(body["ratio"], "adaptive");
+                        let url = body["content"][1]["image_url"]["url"].as_str().unwrap();
+                        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+                        Response::from_string(json!({"id": "cgt-1"}).to_string())
+                    }
                     (_, "/ark/contents/generations/tasks") => {
                         let body: Value = serde_json::from_str(&body).unwrap();
                         assert_eq!(body["ratio"], "16:9");
@@ -613,6 +758,18 @@ mod tests {
                     }
                     (_, "/ark/contents/generations/tasks/cgt-1") => Response::from_string(
                         json!({"status": "succeeded", "content": {"video_url": format!("http://127.0.0.1:{port}/file/ark.mp4")}}).to_string(),
+                    ),
+                    (_, "/h3/v2/video_generation") => {
+                        let body: Value = serde_json::from_str(&body).unwrap();
+                        assert_eq!(body["model"], "MiniMax-H3");
+                        assert_eq!(body["content"][0]["text"], "hello");
+                        assert_eq!(body["duration"], 4, "H3 renders at least 4 s");
+                        assert_eq!(body["ratio"], "9:16");
+                        assert_eq!(body["resolution"], "768P");
+                        Response::from_string(json!({"task_id": "t9", "status": "queued"}).to_string())
+                    }
+                    (_, "/h3/v2/query/video_generation/t9") => Response::from_string(
+                        json!({"task": {"status": "succeeded", "content": {"url": format!("http://127.0.0.1:{port}/file/h3.mp4")}}}).to_string(),
                     ),
                     (_, "/mm/video_generation") if body.contains("bad") => Response::from_string(
                         json!({"base_resp": {"status_code": 1008, "status_msg": "insufficient balance"}}).to_string(),
@@ -643,6 +800,7 @@ mod tests {
             voice: None,
             size: None,
             seconds: None,
+            image: None,
         }
     }
 
@@ -730,6 +888,25 @@ mod tests {
         ark.seconds = Some("5".into());
         let video = generate(&other, &ark, &dir).unwrap();
         assert_eq!(fs::read(&video).unwrap(), b"/file/ark.mp4");
+        fs::write(dir.join("first.png"), b"\x89PNGframe").unwrap();
+        ark.image = Some("first.png".into());
+        let video = generate(&other, &ark, &dir).unwrap();
+        assert_eq!(fs::read(&video).unwrap(), b"/file/ark.mp4");
+        // OpenAI takes the frame as a multipart upload.
+        let mut openai = request("video", Some("o.mp4"));
+        openai.image = Some("first.png".into());
+        let video = generate(&services, &openai, &dir).unwrap();
+        assert_eq!(fs::read(&video).unwrap(), b"mp4data");
+
+        let mut h3 = services.clone();
+        h3.video.url = url.replace("/v1/", "/h3/v1");
+        h3.video.provider = "h3".into();
+        h3.video.model = "MiniMax-H3".into();
+        let mut tall = request("video", Some("h3.mp4"));
+        tall.size = Some("720x1280".into());
+        tall.seconds = Some("2".into());
+        let video = generate(&h3, &tall, &dir).unwrap();
+        assert_eq!(fs::read(&video).unwrap(), b"/file/h3.mp4");
 
         let mut wrong_key = services.clone();
         wrong_key.speech.api_key = "x".into();
@@ -754,6 +931,15 @@ mod tests {
             "ark"
         );
         assert_eq!(service("https://api.minimaxi.com/v1").provider(), "minimax");
+        let tokvi = Service {
+            provider: "minimax".into(),
+            ..service("https://tokvi.net/v1")
+        };
+        assert_eq!(
+            tokvi.provider(),
+            "h3",
+            "Tokvi relays MiniMax-H3 with its own API"
+        );
         assert_eq!(service("https://api.openai.com/v1").provider(), "openai");
         assert_eq!(
             service("https://openspeech.bytedance.com/api/v3").provider(),
