@@ -32,6 +32,14 @@ pub enum PeekSpec {
 /// Thumbnails on the preview's timeline.
 pub const STRIP_FRAMES: usize = 12;
 
+/// A `reel workflow` request, for the app's canvas to carry out on the UI thread.
+pub struct WorkflowRequest {
+    pub project: PathBuf,
+    /// `op` plus its arguments, as `reel` sent them.
+    pub op: serde_json::Value,
+    pub reply: flume::Sender<Result<serde_json::Value>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CaptureJob {
     pub id: u64,
@@ -239,7 +247,14 @@ struct Control {
     jobs: HashMap<u64, Job>,
 }
 
-pub fn start(root: PathBuf, token: String) -> Result<(ServerHandle, flume::Receiver<CaptureJob>)> {
+pub fn start(
+    root: PathBuf,
+    token: String,
+) -> Result<(
+    ServerHandle,
+    flume::Receiver<CaptureJob>,
+    flume::Receiver<WorkflowRequest>,
+)> {
     let server = Server::http("127.0.0.1:0").map_err(|e| anyhow!("starting local server: {e}"))?;
     let port = server
         .server_addr()
@@ -248,6 +263,7 @@ pub fn start(root: PathBuf, token: String) -> Result<(ServerHandle, flume::Recei
         .port();
     let control = Arc::new(Mutex::new(Control::default()));
     let (job_tx, job_rx) = flume::unbounded();
+    let (workflow_tx, workflow_rx) = flume::unbounded();
 
     let handle = ServerHandle {
         port,
@@ -263,8 +279,10 @@ pub fn start(root: PathBuf, token: String) -> Result<(ServerHandle, flume::Recei
             let control = control.clone();
             let token = token.clone();
             let job_tx = job_tx.clone();
+            let workflow_tx = workflow_tx.clone();
             thread::spawn(move || {
-                if let Err(error) = handle_request(request, &root, &control, &token, port, &job_tx)
+                let channels = (&job_tx, &workflow_tx);
+                if let Err(error) = handle_request(request, &root, &control, &token, port, channels)
                 {
                     log::error!("request failed: {error:#}");
                 }
@@ -272,7 +290,7 @@ pub fn start(root: PathBuf, token: String) -> Result<(ServerHandle, flume::Recei
         }
     });
 
-    Ok((handle, job_rx))
+    Ok((handle, job_rx, workflow_rx))
 }
 
 fn handle_request(
@@ -281,7 +299,7 @@ fn handle_request(
     control: &Arc<Mutex<Control>>,
     token: &str,
     port: u16,
-    job_tx: &flume::Sender<CaptureJob>,
+    (job_tx, workflow_tx): (&flume::Sender<CaptureJob>, &flume::Sender<WorkflowRequest>),
 ) -> Result<()> {
     if !valid_host(&request, port) {
         return respond_json(
@@ -329,6 +347,12 @@ fn handle_request(
                 return respond_json(request, 401, &serde_json::json!({"error": "unauthorized"}));
             }
             generate(request, root)
+        }
+        (Method::Post, "/__ctl/workflow") => {
+            if !authorized(&request, token) {
+                return respond_json(request, 401, &serde_json::json!({"error": "unauthorized"}));
+            }
+            workflow(request, root, workflow_tx)
         }
         (Method::Get, "/__ctl/job") => {
             if !authorized(&request, token) {
@@ -685,6 +709,37 @@ fn generate(mut request: Request, root: &Path) -> Result<()> {
     }
 }
 
+/// `reel workflow`: hand the request to the app's canvas and wait for its answer.
+fn workflow(
+    mut request: Request,
+    root: &Path,
+    workflow_tx: &flume::Sender<WorkflowRequest>,
+) -> Result<()> {
+    let mut body = String::new();
+    request.as_reader().read_to_string(&mut body)?;
+    let result = serde_json::from_str::<serde_json::Value>(&body)
+        .map_err(|e| anyhow!("invalid workflow request: {e}"))
+        .and_then(|op| {
+            let project = project_dir(root, op["project"].as_str().unwrap_or_default())?;
+            let (reply, answer) = flume::bounded(1);
+            workflow_tx
+                .send(WorkflowRequest { project, op, reply })
+                .map_err(|_| anyhow!("lumireel is quitting"))?;
+            // Edits are quick; copying a large file in can take a while.
+            answer
+                .recv_timeout(Duration::from_secs(120))
+                .map_err(|_| anyhow!("the canvas did not answer"))?
+        });
+    match result {
+        Ok(value) => respond_json(request, 200, &value),
+        Err(error) => respond_json(
+            request,
+            400,
+            &serde_json::json!({ "error": format!("{error:#}") }),
+        ),
+    }
+}
+
 fn job_info(
     request: Request,
     control: &Arc<Mutex<Control>>,
@@ -864,7 +919,7 @@ fn spec_json(spec: &PeekSpec) -> serde_json::Value {
     }
 }
 
-fn has_ffmpeg() -> bool {
+pub(crate) fn has_ffmpeg() -> bool {
     Command::new("ffmpeg")
         .arg("-version")
         .stdout(Stdio::null())
@@ -876,7 +931,7 @@ fn has_ffmpeg() -> bool {
 
 /// The H.264 encoder this ffmpeg was built with. Fedora's `ffmpeg-free` has OpenH264 and no
 /// libx264, while the usual macOS and Windows builds have libx264.
-fn video_encoder() -> Option<&'static str> {
+pub(crate) fn video_encoder() -> Option<&'static str> {
     let output = Command::new("ffmpeg")
         .args(["-hide_banner", "-encoders"])
         .output()
@@ -1881,7 +1936,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("lumireel-range-{}", std::process::id()));
         fs::create_dir_all(root.join("film")).unwrap();
         fs::write(root.join("film/clip.mp4"), b"0123456789").unwrap();
-        let (handle, _jobs) = start(root.clone(), "tok".into()).unwrap();
+        let (handle, _jobs, _workflow) = start(root.clone(), "tok".into()).unwrap();
         let url = format!("{}/p/film/clip.mp4", handle.base_url);
         let get = |range: Option<&str>| {
             let mut request = ureq::get(&url);
@@ -1897,6 +1952,48 @@ mod tests {
         assert_eq!(get(Some("bytes=7-")), (206, "789".into()));
         let past = ureq::get(&url).header("Range", "bytes=20-").call();
         assert!(matches!(past, Err(ureq::Error::StatusCode(416))));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workflow_requests_reach_the_app_and_its_answer_comes_back() {
+        let root =
+            std::env::temp_dir().join(format!("lumireel-workflow-ctl-{}", std::process::id()));
+        fs::create_dir_all(root.join("film")).unwrap();
+        let (handle, _jobs, workflow) = start(root.clone(), "tok".into()).unwrap();
+        // The app's side: answer with what was asked, or fail.
+        thread::spawn(move || {
+            while let Ok(request) = workflow.recv() {
+                let answer = match request.op["op"].as_str() {
+                    Some("show") => Ok(serde_json::json!({ "dir": request.project })),
+                    _ => Err(anyhow!("no such thing")),
+                };
+                let _ = request.reply.send(answer);
+            }
+        });
+        let call = |token: &str, op: &str| {
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .build()
+                .into();
+            let mut response = agent
+                .post(format!("{}/__ctl/workflow", handle.base_url))
+                .header("Authorization", format!("Bearer {token}"))
+                .send_json(serde_json::json!({ "project": "film", "op": op }))
+                .unwrap();
+            let status = response.status().as_u16();
+            let body: serde_json::Value = response.body_mut().read_json().unwrap();
+            (status, body)
+        };
+        let (status, body) = call("tok", "show");
+        assert_eq!(status, 200);
+        assert!(body["dir"].as_str().unwrap().ends_with("film"));
+        let (status, body) = call("tok", "fly");
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (400, Some("no such thing"))
+        );
+        assert_eq!(call("wrong", "show").0, 401);
         fs::remove_dir_all(root).unwrap();
     }
 

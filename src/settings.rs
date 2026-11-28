@@ -2,16 +2,15 @@
 //! speech, image and video generation. Every edit takes effect at once: the form emits
 //! [`SettingsChanged`] and the app applies and saves it.
 
-use std::path::PathBuf;
+use std::{cell::Cell, path::PathBuf, rc::Rc};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     group_box::GroupBoxVariant,
     h_flex,
     input::{Input, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     switch::Switch,
     tag::Tag,
@@ -23,13 +22,19 @@ use rust_i18n::t;
 use crate::{
     config::{Config, Service, Services, SpareService},
     i18n, library,
-    ui::dialog_footer,
 };
 
 pub struct SettingsForm {
     locale: SharedString,
     library_dir: PathBuf,
     services: Services,
+    /// The add/edit form, shown instead of the service list while open.
+    editor: Option<Entity<ServiceEditor>>,
+    /// Window x of the service groups' right edge and of the title row's left, from the last
+    /// frame: the page header cannot right-align a title suffix, so the add button is laid out
+    /// from these.
+    groups_right: Rc<Cell<Pixels>>,
+    title_left: Rc<Cell<Pixels>>,
 }
 
 /// Something in the form changed; read it back with [`SettingsForm::locale`] and
@@ -57,6 +62,9 @@ impl SettingsForm {
             locale: i18n::current().into(),
             library_dir: config.library_dir.clone(),
             services: config.services.clone(),
+            editor: None,
+            groups_right: Rc::default(),
+            title_left: Rc::default(),
         }
     }
 
@@ -152,51 +160,41 @@ impl SettingsForm {
 
     fn services_page(&self, cx: &mut Context<Self>) -> SettingPage {
         let form = cx.entity();
+        let page = SettingPage::new(t!("settings.services").to_string())
+            .icon(Lucide::Sparkles)
+            .resettable(false);
+        if let Some(editor) = self.editor.clone() {
+            return page.group(
+                SettingGroup::new().item(SettingItem::render(move |_, _, _| editor.clone())),
+            );
+        }
         let groups = KINDS.map(|(kind, icon)| {
             let listed = self.listed(kind);
             let count = listed.len();
-            let header = SettingItem::render({
-                let form = form.clone();
-                move |_, _, cx| {
-                    let form = form.clone();
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            Icon::new(icon)
-                                .small()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                        .child(
-                            div()
-                                .font_semibold()
-                                .child(t!(format!("settings.{kind}")).to_string()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(count.to_string()),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            Button::new(SharedString::from(format!("add-{kind}")))
-                                .small()
-                                .outline()
-                                .icon(Lucide::Plus)
-                                .label(t!("settings.add").to_string())
-                                .on_click(move |_, window, cx| {
-                                    open_editor(
-                                        form.clone(),
-                                        kind,
-                                        None,
-                                        Service::default(),
-                                        window,
-                                        cx,
-                                    )
-                                }),
-                        )
-                }
+            let right = self.groups_right.clone();
+            let header = SettingItem::render(move |_, _, cx| {
+                h_flex()
+                    .relative()
+                    .w_full()
+                    .child(measure(right.clone(), |b| b.right()))
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Icon::new(icon)
+                            .small()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .font_semibold()
+                            .child(t!(format!("settings.{kind}")).to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(count.to_string()),
+                    )
             });
             let cards = listed.into_iter().map(|(slot, service)| {
                 let form = form.clone();
@@ -218,12 +216,69 @@ impl SettingsForm {
                 group.items(cards)
             }
         });
-        SettingPage::new(t!("settings.services").to_string())
-            .icon(Lucide::Sparkles)
-            .description(t!("settings.hint").to_string())
-            .resettable(false)
+        // The form starts on the first kind still missing a service; the cards switch it.
+        let first = KINDS
+            .iter()
+            .map(|(kind, _)| *kind)
+            .find(|kind| self.services.active(kind).is_empty())
+            .unwrap_or("video");
+        // In the page header, level with the title and right-aligned with the cards below.
+        // The suffix sits in the title's own row, which is only as wide as the title, so it is
+        // stretched from there to the groups' right edge, measured on the last frame.
+        let (right, left) = (self.groups_right.clone(), self.title_left.clone());
+        let width = right.get() - left.get();
+        page.description(t!("settings.hint").to_string())
+            .title_suffix(move |_, _| {
+                let form = form.clone();
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(width.max(px(0.)))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(measure(left.clone(), |b| b.left()))
+                    // Until both edges are known it would land in the wrong place for a frame.
+                    .when(width > px(0.), |el| {
+                        el.child(
+                            Button::new("add-service")
+                                .small()
+                                .primary()
+                                .icon(Lucide::Plus)
+                                .label(t!("settings.add").to_string())
+                                .on_click(move |_, window, cx| {
+                                    open_editor(
+                                        form.clone(),
+                                        first,
+                                        None,
+                                        Service::default(),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                    })
+            })
             .groups(groups)
     }
+}
+
+/// An invisible layer over its parent that keeps one edge of it, in window coordinates, and
+/// draws the next frame when that edge moved.
+fn measure(cell: Rc<Cell<Pixels>>, edge: fn(&Bounds<Pixels>) -> Pixels) -> impl IntoElement {
+    canvas(
+        move |bounds, window, _| {
+            let at = edge(&bounds);
+            if cell.replace(at) != at {
+                window.refresh();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
 }
 
 /// A service at a glance, with its on switch, edit and delete.
@@ -357,8 +412,11 @@ fn service_card(
         )
 }
 
-/// The add/edit form, shown in its own dialog over the settings.
+/// The add/edit form, shown in the services page in place of the list.
 struct ServiceEditor {
+    form: WeakEntity<SettingsForm>,
+    /// Where the edited service is; `None` adds one.
+    slot: Option<Slot>,
     kind: &'static str,
     provider: SharedString,
     url: Entity<InputState>,
@@ -368,7 +426,9 @@ struct ServiceEditor {
 
 impl ServiceEditor {
     fn new(
+        form: WeakEntity<SettingsForm>,
         kind: &'static str,
+        slot: Option<Slot>,
         service: &Service,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -381,6 +441,8 @@ impl ServiceEditor {
             })
         };
         let mut editor = Self {
+            form,
+            slot,
             kind,
             provider: service.provider().to_string().into(),
             url: input(&service.url, false, cx),
@@ -431,66 +493,213 @@ impl ServiceEditor {
             model: or(value(&self.model), model),
         }
     }
+
+    /// Back to the list, saving the service first when `save`.
+    fn close(&mut self, save: bool, cx: &mut Context<Self>) {
+        let (kind, slot, service) = (self.kind, self.slot, self.service(cx));
+        self.form
+            .update(cx, |form, cx| {
+                if save {
+                    form.save(kind, slot, service, cx);
+                }
+                form.editor = None;
+                cx.notify();
+            })
+            .ok();
+    }
+
+    /// One provider to pick: its name and what it is for.
+    fn card(&self, kind: &'static str, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        let theme = cx.theme();
+        let on = self.kind == kind && self.provider.as_ref() == id;
+        let icon = KINDS
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map_or(Lucide::Sparkles, |(_, icon)| *icon);
+        v_flex()
+            .id(SharedString::from(format!("provider-{kind}-{id}")))
+            .px_3()
+            .py_1p5()
+            .gap_0p5()
+            .rounded(theme.radius)
+            .border_1()
+            .cursor_pointer()
+            .when(on, |d| {
+                d.border_color(theme.primary)
+                    .bg(theme.primary.opacity(0.08))
+            })
+            .when(!on, |d| {
+                d.border_color(theme.border)
+                    .hover(|d| d.bg(theme.secondary.opacity(0.5)))
+            })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .font_medium()
+                    .child(Icon::new(icon).size_3p5())
+                    .child(
+                        div()
+                            .truncate()
+                            .child(t!(format!("settings.provider_{id}")).to_string()),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(t!(format!("settings.{kind}")).to_string()),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.kind = kind;
+                this.provider = id.into();
+                this.sync_placeholders(window, cx);
+                cx.notify();
+            }))
+    }
+}
+
+/// What to know about a provider's URL or model beyond the example.
+fn provider_note(provider: &str) -> Option<String> {
+    match provider {
+        "h3" => Some(t!("settings.note_h3").to_string()),
+        "doubao" => Some(t!("settings.note_doubao").to_string()),
+        "mimo" => Some(t!("settings.note_mimo").to_string()),
+        _ => None,
+    }
 }
 
 impl Render for ServiceEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let this = cx.entity();
-        let kind = self.kind;
-        let current = self.provider.clone();
-        let label = t!(format!("settings.provider_{current}")).to_string();
-        let provider = Button::new("provider")
-            .w_full()
-            .outline()
-            .label(label)
-            .dropdown_caret(true)
-            .dropdown_menu(move |menu, _, _| {
-                PROVIDERS
-                    .iter()
-                    .filter(|(k, ..)| *k == kind)
-                    .fold(menu, |menu, (_, id, _, _)| {
-                        let this = this.clone();
-                        menu.item(
-                            PopupMenuItem::new(t!(format!("settings.provider_{id}")).to_string())
-                                .checked(current.as_ref() == *id)
-                                .on_click(move |_, window, cx| {
-                                    this.update(cx, |editor, cx| {
-                                        editor.provider = (*id).into();
-                                        editor.sync_placeholders(window, cx);
-                                        cx.notify();
-                                    })
-                                }),
-                        )
-                    })
-            });
-        let row = |label: SharedString, field: AnyElement| {
+        let theme = cx.theme().clone();
+        let editing = self.slot.is_some();
+        let field = |label: String, control: AnyElement, hint: Option<String>| {
             v_flex()
-                .gap_1()
-                .child(div().text_sm().child(label))
-                .child(field)
+                .gap_1p5()
+                .child(div().text_sm().font_medium().child(label))
+                .child(control)
+                .when_some(hint, |el, h| {
+                    el.child(div().text_xs().text_color(theme.muted_foreground).child(h))
+                })
+        };
+        // A service keeps its kind once added: only its own providers are offered then.
+        let mut providers = v_flex().gap_2();
+        for (kind, _) in KINDS {
+            if editing && kind != self.kind {
+                continue;
+            }
+            let cards: Vec<_> = PROVIDERS
+                .iter()
+                .filter(|(k, ..)| *k == kind)
+                .map(|(_, id, _, _)| self.card(kind, id, cx))
+                .collect();
+            // The kind in a narrow left column keeps the picker short.
+            providers = providers.child(
+                h_flex()
+                    .items_start()
+                    .gap_3()
+                    .child(
+                        div()
+                            .w(px(48.))
+                            .flex_none()
+                            .pt_2()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(t!(format!("settings.{kind}")).to_string()),
+                    )
+                    .child(div().flex_1().grid().grid_cols(3).gap_2().children(cards)),
+            );
+        }
+        let (url, model) = self.defaults();
+        let example =
+            (!url.is_empty()).then(|| t!("settings.example", url = url, model = model).to_string());
+        let url_hint = match (example, provider_note(&self.provider)) {
+            (Some(example), Some(note)) => Some(format!("{example} · {note}")),
+            (example, note) => example.or(note),
         };
         v_flex()
-            .gap_3()
-            .child(row(
-                t!("settings.provider").to_string().into(),
-                provider.into_any_element(),
+            .w_full()
+            .gap_4()
+            .child(
+                h_flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div().text_lg().font_semibold().child(
+                                    t!(if editing {
+                                        "settings.edit"
+                                    } else {
+                                        "settings.add"
+                                    })
+                                    .to_string(),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .child(t!("settings.form_hint").to_string()),
+                            ),
+                    )
+                    .child(
+                        Button::new("service-back")
+                            .small()
+                            .ghost()
+                            .icon(Lucide::ArrowLeft)
+                            .label(t!("settings.back").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| this.close(false, cx))),
+                    ),
+            )
+            .child(field(
+                t!("settings.provider").to_string(),
+                providers.into_any_element(),
+                None,
             ))
-            .child(row(
-                t!("settings.url").to_string().into(),
+            .child(field(
+                t!("settings.url").to_string(),
                 Input::new(&self.url).into_any_element(),
+                url_hint,
             ))
-            .child(row(
-                t!("settings.key").to_string().into(),
-                Input::new(&self.key).mask_toggle().into_any_element(),
-            ))
-            .child(row(
-                t!("settings.model").to_string().into(),
+            .child(field(
+                t!("settings.model").to_string(),
                 Input::new(&self.model).into_any_element(),
+                None,
             ))
+            .child(field(
+                t!("settings.key").to_string(),
+                Input::new(&self.key).mask_toggle().into_any_element(),
+                Some(t!("settings.key_hint").to_string()),
+            ))
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .pt_3()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        Button::new("service-cancel")
+                            .small()
+                            .outline()
+                            .label(t!("common.cancel").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| this.close(false, cx))),
+                    )
+                    .child(
+                        Button::new("service-save")
+                            .small()
+                            .primary()
+                            .label(t!("common.save").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| this.close(true, cx))),
+                    ),
+            )
     }
 }
 
-/// Add (`slot` is `None`) or edit a service in a dialog; saving writes it back to `form`.
+/// Add (`slot` is `None`) or edit a service: the services page shows the form until it closes.
 fn open_editor(
     form: Entity<SettingsForm>,
     kind: &'static str,
@@ -499,30 +708,11 @@ fn open_editor(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let editor = cx.new(|cx| ServiceEditor::new(kind, &service, window, cx));
-    let title = t!(if slot.is_some() {
-        "settings.edit"
-    } else {
-        "settings.add"
-    })
-    .to_string();
-    window.open_dialog(cx, move |dialog, _, _| {
-        let editor = editor.clone();
-        let form = form.clone();
-        dialog
-            .title(title.clone())
-            .w(px(460.))
-            .child(editor.clone())
-            .footer(dialog_footer(
-                Button::new("save-service")
-                    .primary()
-                    .label(t!("common.save").to_string()),
-            ))
-            .on_ok(move |_, _, cx| {
-                let service = editor.read(cx).service(cx);
-                form.update(cx, |form, cx| form.save(kind, slot, service, cx));
-                true
-            })
+    let weak = form.downgrade();
+    let editor = cx.new(|cx| ServiceEditor::new(weak, kind, slot, &service, window, cx));
+    form.update(cx, |form, cx| {
+        form.editor = Some(editor);
+        cx.notify();
     });
 }
 
@@ -535,9 +725,11 @@ fn defaults(kind: &str, provider: &str) -> (&'static str, &'static str) {
 }
 
 impl Render for SettingsForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let general = self.general_page(cx);
-        div().h(px(480.)).child(
+        // The dialog's title and padding take about 160px of the window.
+        let height = (window.viewport_size().height - px(160.)).min(px(720.));
+        div().h(height).child(
             Settings::new("settings")
                 .sidebar_width(px(180.))
                 .with_group_variant(GroupBoxVariant::Outline)
@@ -600,4 +792,6 @@ const PROVIDERS: &[(&str, &str, &str, &str)] = &[
         "https://api.minimaxi.com/v1",
         "MiniMax-Hailuo-2.3",
     ),
+    // A relay of the user's choosing: no address to suggest.
+    ("video", "h3", "", "MiniMax-H3"),
 ];

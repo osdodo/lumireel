@@ -21,3 +21,5 @@ pub mod settings;
 pub mod terminal;
 pub mod ui;
 pub mod watch;
+pub mod workflow;
+pub mod workflow_canvas;

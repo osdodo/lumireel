@@ -117,6 +117,8 @@ pub struct PreviewPanel {
 
     watcher: Option<ProjectWatcher>,
     watch_task: Option<Task<()>>,
+    /// The canvas has the stage's place: the native views stay hidden whatever closes.
+    suppressed: bool,
 }
 
 impl PreviewPanel {
@@ -283,6 +285,7 @@ impl PreviewPanel {
             seek_seq: 0,
             watcher: None,
             watch_task: None,
+            suppressed: false,
         }
     }
 
@@ -869,7 +872,20 @@ impl PreviewPanel {
         self.player.update(cx, |player, _| player.hide());
     }
 
+    /// Give the stage's place to the canvas (`true`), or take it back.
+    pub fn set_suppressed(&mut self, suppressed: bool, cx: &mut Context<Self>) {
+        self.suppressed = suppressed;
+        if suppressed {
+            self.hide_webview(cx);
+        } else {
+            self.show_webview(cx);
+        }
+    }
+
     pub fn show_webview(&mut self, cx: &mut Context<Self>) {
+        if self.suppressed {
+            return;
+        }
         if self.media.is_some() {
             self.webview.update(cx, |webview, _| webview.hide());
             self.player.update(cx, |player, _| player.show());
@@ -980,7 +996,7 @@ impl PreviewPanel {
             player.load_url("about:blank");
             player.hide();
         });
-        self.webview.update(cx, |webview, _| webview.show());
+        self.show_webview(cx);
         cx.notify();
     }
 
